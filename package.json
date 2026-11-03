@@ -34,7 +34,7 @@
   },
   "homepage": "https://github.com/HyperDevTools/stellar-toolkit#readme",
   "dependencies": {
-    "stellar-sdk": "^11.3.0"
+    "stellar-sdk": "^13.3.0"
   },
   "devDependencies": {
     "@types/jest": "^29.5.11",
