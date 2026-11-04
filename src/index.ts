@@ -6,11 +6,14 @@ import {
   PathPaymentOptions,
   TrustlineOptions,
   Balance,
+  ContractCallOptions,
+  ContractSimulationResult,
 } from './types';
 import { createServer, getNetworkPassphrase } from './utils/network';
 import { AccountManager } from './core/account';
 import { PaymentManager } from './core/payment';
 import { TrustlineManager } from './core/trustline';
+import { ContractManager } from './core/contract';
 import { createAsset, formatAssetString } from './utils/asset';
 
 export class StellarToolkit {
@@ -19,6 +22,7 @@ export class StellarToolkit {
   private accountManager: AccountManager;
   private paymentManager: PaymentManager;
   private trustlineManager: TrustlineManager;
+  private contractManager: ContractManager;
 
   constructor(config: ToolkitConfig) {
     this.server = createServer(config.network, config.horizonUrl);
@@ -26,6 +30,7 @@ export class StellarToolkit {
     this.accountManager = new AccountManager(this.server);
     this.paymentManager = new PaymentManager(this.server, this.networkPassphrase);
     this.trustlineManager = new TrustlineManager(this.server, this.networkPassphrase);
+    this.contractManager = new ContractManager(this.networkPassphrase, config.network);
   }
 
   // Account operations
@@ -83,3 +88,5 @@ export class StellarToolkit {
 
 // Export types
 export * from './types';
+
+export { ContractManager } from './core/contract';

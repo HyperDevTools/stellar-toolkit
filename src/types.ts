@@ -45,3 +45,22 @@ export interface Balance {
   balance: string;
   limit?: string;
 }
+
+export interface ContractCallOptions {
+  contractId: string;
+  method: string;
+  args?: unknown[];
+  signer?: string;
+  fee?: string;
+  network?: 'testnet' | 'mainnet' | 'futurenet';
+  rpcUrl?: string;
+}
+
+export interface ContractSimulationResult<T = unknown> {
+  result: T;
+  cost: {
+    cpuInsns: string;
+    memBytes: string;
+  };
+  latestLedger: number;
+}
