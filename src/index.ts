@@ -4,6 +4,7 @@ import {
   AccountInfo,
   PaymentOptions,
   PathPaymentOptions,
+  PathPaymentStrictSendOptions,
   TrustlineOptions,
   Balance,
 } from './types';
@@ -60,6 +61,10 @@ export class StellarToolkit {
 
   async sendPathPayment(options: PathPaymentOptions): Promise<string> {
     return this.paymentManager.sendPathPayment(options);
+  }
+
+  async sendPathPaymentStrictSend(options: PathPaymentStrictSendOptions): Promise<string> {
+    return this.paymentManager.sendPathPaymentStrictSend(options);
   }
 
   // Trustline operations

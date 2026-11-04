@@ -45,3 +45,14 @@ export interface Balance {
   balance: string;
   limit?: string;
 }
+
+export interface PathPaymentStrictSendOptions {
+  from: string;
+  to: string;
+  sendAsset: 'native' | CustomAsset;
+  sendAmount: string;
+  destAsset: 'native' | CustomAsset;
+  minDestAmount: string;
+  path?: Array<'native' | CustomAsset>;
+  memo?: string;
+}
