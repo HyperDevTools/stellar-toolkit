@@ -1,9 +1,18 @@
+import {
+  Account,
+  Asset,
+  BASE_FEE,
+  Keypair,
+  Networks,
+  Operation,
+  TransactionBuilder,
+} from 'stellar-sdk';
 import { StellarToolkit } from '../index';
 
-describe('StellarToolkit - Account Operations', () => {
+describe('StellarToolkit - Account & Multi-Sig Operations', () => {
   let toolkit: StellarToolkit;
 
-  beforeAll(() => {
+  beforeEach(() => {
     toolkit = new StellarToolkit({ network: 'testnet' });
   });
 
@@ -29,8 +38,10 @@ describe('StellarToolkit - Account Operations', () => {
   describe('accountExists', () => {
     it('should return false for non-existent account', async () => {
       const keypair = toolkit.generateKeypair();
-      const exists = await toolkit.accountExists(keypair.publicKey);
+      const server = (toolkit as unknown as { server: { loadAccount: jest.Mock } }).server;
+      jest.spyOn(server, 'loadAccount').mockRejectedValueOnce(new Error('404 Not Found'));
 
+      const exists = await toolkit.accountExists(keypair.publicKey);
       expect(exists).toBe(false);
     });
   });
@@ -47,6 +58,200 @@ describe('StellarToolkit - Account Operations', () => {
         issuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
       });
       expect(formatted).toContain('USDC');
+    });
+  });
+
+  describe('Multi-Signature Support', () => {
+    const mockAccountServer = (tk: StellarToolkit, pubKey: string) => {
+      const server = (
+        tk as unknown as {
+          server: { loadAccount: jest.Mock; submitTransaction: jest.Mock };
+        }
+      ).server;
+      jest
+        .spyOn(server, 'loadAccount')
+        .mockResolvedValue(new Account(pubKey, '100') as unknown as never);
+      jest
+        .spyOn(server, 'submitTransaction')
+        .mockResolvedValue({ hash: 'multisig_tx_hash_123' } as unknown as never);
+      return server;
+    };
+
+    it('test_multisig_creation_2of3', async () => {
+      const master = Keypair.random();
+      const signer2 = Keypair.random();
+      const signer3 = Keypair.random();
+      mockAccountServer(toolkit, master.publicKey());
+
+      const txHash = await toolkit.configureMultiSig({
+        masterSecret: master.secret(),
+        masterWeight: 1,
+        signers: [
+          { publicKey: signer2.publicKey(), weight: 1 },
+          { publicKey: signer3.publicKey(), weight: 1 },
+        ],
+        thresholds: { low: 1, medium: 2, high: 2 },
+      });
+
+      expect(txHash).toBe('multisig_tx_hash_123');
+    });
+
+    it('test_multisig_signing_sufficient', () => {
+      const s1 = Keypair.random();
+      const s2 = Keypair.random();
+      const dest = Keypair.random();
+      const account = new Account(s1.publicKey(), '101');
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.TESTNET,
+      })
+        .addOperation(
+          Operation.payment({
+            destination: dest.publicKey(),
+            asset: Asset.native(),
+            amount: '10',
+          }),
+        )
+        .setTimeout(180)
+        .build();
+
+      const signed = toolkit.signMultiSigTransaction(tx, [s1.secret(), s2.secret()], 2);
+      expect(signed.signatures.length).toBe(2);
+    });
+
+    it('test_multisig_signing_insufficient', () => {
+      const s1 = Keypair.random();
+      const dest = Keypair.random();
+      const account = new Account(s1.publicKey(), '101');
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.TESTNET,
+      })
+        .addOperation(
+          Operation.payment({
+            destination: dest.publicKey(),
+            asset: Asset.native(),
+            amount: '10',
+          }),
+        )
+        .setTimeout(180)
+        .build();
+
+      expect(() => toolkit.signMultiSigTransaction(tx, [s1.secret()], 2)).toThrow(
+        /Insufficient signatures/i,
+      );
+    });
+
+    it('test_threshold_validation', async () => {
+      const master = Keypair.random();
+      const signer2 = Keypair.random();
+
+      await expect(
+        toolkit.configureMultiSig({
+          masterSecret: master.secret(),
+          masterWeight: 1,
+          signers: [{ publicKey: signer2.publicKey(), weight: 1 }],
+          thresholds: { low: 1, medium: 3, high: 5 },
+        }),
+      ).rejects.toThrow(/Threshold too high/i);
+    });
+
+    it('test_add_signer', async () => {
+      const master = Keypair.random();
+      const newSigner = Keypair.random();
+      mockAccountServer(toolkit, master.publicKey());
+
+      const hash = await toolkit.addSigner(master.secret(), newSigner.publicKey(), 2);
+      expect(hash).toBe('multisig_tx_hash_123');
+    });
+
+    it('test_remove_signer', async () => {
+      const master = Keypair.random();
+      const oldSigner = Keypair.random();
+      mockAccountServer(toolkit, master.publicKey());
+
+      const hash = await toolkit.removeSigner(master.secret(), oldSigner.publicKey());
+      expect(hash).toBe('multisig_tx_hash_123');
+    });
+
+    it('test_max_signers', async () => {
+      const master = Keypair.random();
+      mockAccountServer(toolkit, master.publicKey());
+      const signers = Array.from({ length: 20 }, () => ({
+        publicKey: Keypair.random().publicKey(),
+        weight: 1,
+      }));
+
+      const hash = await toolkit.configureMultiSig({
+        masterSecret: master.secret(),
+        masterWeight: 1,
+        signers,
+        thresholds: { low: 1, medium: 2, high: 3 },
+      });
+      expect(hash).toBe('multisig_tx_hash_123');
+
+      const twentyOne = [...signers, { publicKey: Keypair.random().publicKey(), weight: 1 }];
+      await expect(
+        toolkit.configureMultiSig({
+          masterSecret: master.secret(),
+          signers: twentyOne,
+          thresholds: { low: 1, medium: 2, high: 3 },
+        }),
+      ).rejects.toThrow(/Cannot exceed 20 signers/i);
+    });
+
+    it('test_weight_limits', async () => {
+      const master = Keypair.random();
+      const signer = Keypair.random();
+
+      await expect(
+        toolkit.configureMultiSig({
+          masterSecret: master.secret(),
+          signers: [{ publicKey: signer.publicKey(), weight: 256 }],
+          thresholds: { low: 1, medium: 1, high: 1 },
+        }),
+      ).rejects.toThrow(/out of range/i);
+    });
+
+    it('covers getBalances, getNativeBalance, and custom signerWeights', async () => {
+      const kp = Keypair.random();
+      const server = (toolkit as unknown as { server: { loadAccount: jest.Mock } }).server;
+      jest.spyOn(server, 'loadAccount').mockResolvedValue({
+        balances: [{ asset_type: 'native', balance: '123.4500000' }],
+      } as unknown as never);
+
+      const balances = await toolkit.getBalances(kp.publicKey());
+      expect(balances).toHaveLength(1);
+      const nativeBal = await toolkit.getNativeBalance(kp.publicKey());
+      expect(nativeBal).toBe('123.4500000');
+
+      toolkit.validateMultiSigConfig({
+        masterSecret: kp.secret(),
+        signers: [{ publicKey: kp.publicKey(), weight: 2 }],
+        thresholds: { low: 1, medium: 2, high: 2 },
+      });
+
+      const s1 = Keypair.random();
+      const dest = Keypair.random();
+      const account = new Account(s1.publicKey(), '101');
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.TESTNET,
+      })
+        .addOperation(
+          Operation.payment({
+            destination: dest.publicKey(),
+            asset: Asset.native(),
+            amount: '10',
+          }),
+        )
+        .setTimeout(180)
+        .build();
+
+      const signed = toolkit.signMultiSigTransaction(tx, [s1.secret()], 3, {
+        [s1.publicKey()]: 3,
+      });
+      expect(signed.signatures.length).toBe(1);
     });
   });
 });
