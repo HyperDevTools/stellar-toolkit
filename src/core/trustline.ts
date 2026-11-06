@@ -1,6 +1,7 @@
-import { Server, TransactionBuilder, Operation, Keypair, BASE_FEE } from 'stellar-sdk';
+import { TransactionBuilder, Operation, Keypair, BASE_FEE } from 'stellar-sdk';
 import { TrustlineOptions } from '../types';
 import { createAsset } from '../utils/asset';
+import { Server } from '../utils/network';
 
 export class TrustlineManager {
   constructor(
