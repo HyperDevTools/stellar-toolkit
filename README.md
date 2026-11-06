@@ -130,6 +130,83 @@ await toolkit.addTrustline({
 });
 ```
 
+### Multi-Signature Account Operations
+
+```typescript
+// Configure a 2-of-3 multi-signature account
+await toolkit.configureMultiSig({
+  masterSecret,
+  masterWeight: 1,
+  signers: [
+    { publicKey: signer2PublicKey, weight: 1 },
+    { publicKey: signer3PublicKey, weight: 1 },
+  ],
+  thresholds: { low: 1, medium: 2, high: 2 },
+});
+
+// Sign a transaction with multiple signers and verify threshold
+const signedTx = toolkit.signMultiSigTransaction(tx, [masterSecret, signer2Secret], 2);
+```
+
+### Path Payment Strict Send
+
+```typescript
+// Send exact source amount (100 XLM) with automatic Horizon path discovery and slippage protection
+await toolkit.sendPathPaymentStrictSend({
+  from: sourceSecret,
+  to: destinationPublicKey,
+  sendAsset: 'native',
+  sendAmount: '100',
+  destAsset: {
+    code: 'USDC',
+    issuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+  },
+  minDestAmount: '95',
+});
+```
+
+### Fee Bump Transactions
+
+```typescript
+// Bump the fee on an existing v1 transaction
+const bumpedHash = await toolkit.submitFeeBumpTransaction({
+  feeSourceSecret: sponsorSecret,
+  innerTransaction: stuckTransactionXdr,
+  maxFeePerOp: 500,
+});
+```
+
+### Claimable Balances & AMM Liquidity Pools
+
+```typescript
+// Create a time-locked claimable balance
+await toolkit.createClaimableBalance({
+  from: senderSecret,
+  asset: 'native',
+  amount: '100',
+  claimants: [
+    {
+      destination: recipientPublicKey,
+      predicate: { type: 'not_before', unixTimestamp: Math.floor(Date.now() / 1000) + 3600 },
+    },
+  ],
+});
+
+// Deposit liquidity into a constant-product AMM pool
+await toolkit.depositLiquidity({
+  accountSecret: userSecret,
+  assetA: 'native',
+  assetB: {
+    code: 'USDC',
+    issuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+  },
+  maxAmountA: '200',
+  maxAmountB: '50',
+  minPrice: '3.8',
+  maxPrice: '4.2',
+});
+```
+
 ## 🧪 Development
 
 ### Build Scripts

@@ -1,5 +1,4 @@
 import { createAsset, isNativeAsset, formatAssetString } from '../utils/asset';
-import { Asset } from 'stellar-sdk';
 
 describe('Asset Utilities', () => {
   describe('createAsset', () => {
