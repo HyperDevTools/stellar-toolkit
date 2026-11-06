@@ -111,4 +111,78 @@ describe('StellarToolkit - Liquidity Pool Operations', () => {
     const proportionalShares = toolkit.calculateLpAmount(200, 50, 2000, 500, 1000);
     expect(proportionalShares).toBe('100.0000000');
   });
+
+  it.each([NaN, Infinity, 0, -1])('rejects invalid amountA %p', (amountA) => {
+    expect(() => toolkit.calculateLpAmount(amountA, 10)).toThrow('amountA');
+  });
+
+  it.each([NaN, Infinity, 0, -1])('rejects invalid amountB %p', (amountB) => {
+    expect(() => toolkit.calculateLpAmount(10, amountB)).toThrow('amountB');
+  });
+
+  it.each([
+    { field: 'reserveA', reserveA: 0, reserveB: 10, totalShares: 100 },
+    { field: 'reserveA', reserveA: NaN, reserveB: 10, totalShares: 100 },
+    { field: 'reserveB', reserveA: 10, reserveB: Infinity, totalShares: 100 },
+    { field: 'totalShares', reserveA: 10, reserveB: 10, totalShares: 0 },
+    { field: 'totalShares', reserveA: 10, reserveB: 10, totalShares: NaN },
+  ])('rejects invalid $field', ({ field, reserveA, reserveB, totalShares }) => {
+    expect(() => toolkit.calculateLpAmount(1, 1, reserveA, reserveB, totalShares)).toThrow(field);
+  });
+
+  it('rejects incomplete optional reserve inputs', () => {
+    expect(() => toolkit.calculateLpAmount(1, 1, 10)).toThrow(
+      'reserveA, reserveB, and totalShares',
+    );
+  });
+
+  it.each([
+    { field: 'maxAmountA', maxAmountA: 'NaN', maxAmountB: '1' },
+    { field: 'maxAmountA', maxAmountA: '0', maxAmountB: '1' },
+    { field: 'maxAmountB', maxAmountA: '1', maxAmountB: 'Infinity' },
+  ])('rejects invalid $field without submitting', async ({ field, maxAmountA, maxAmountB }) => {
+    const user = Keypair.random();
+    const server = (toolkit as unknown as { server: { submitTransaction: jest.Mock } }).server;
+
+    await expect(
+      toolkit.depositLiquidity({
+        accountSecret: user.secret(),
+        assetA: 'native',
+        assetB: usdc,
+        maxAmountA,
+        maxAmountB,
+        minPrice: '3.5',
+        maxPrice: '4.5',
+      }),
+    ).rejects.toThrow(field);
+    expect(server.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { field: 'spotPrice', spotPrice: NaN, minPrice: '3.5', maxPrice: '4.5' },
+    { field: 'spotPrice', spotPrice: Infinity, minPrice: '3.5', maxPrice: '4.5' },
+    { field: 'minPrice', spotPrice: 4, minPrice: 'NaN', maxPrice: '4.5' },
+    { field: 'maxPrice', spotPrice: 4, minPrice: '3.5', maxPrice: 'Infinity' },
+    { field: 'minPrice', spotPrice: 4, minPrice: '5', maxPrice: '4.5' },
+  ])(
+    'rejects invalid $field without submitting',
+    async ({ field, spotPrice, minPrice, maxPrice }) => {
+      const user = Keypair.random();
+      const server = (toolkit as unknown as { server: { submitTransaction: jest.Mock } }).server;
+
+      await expect(
+        toolkit.depositLiquidity({
+          accountSecret: user.secret(),
+          assetA: 'native',
+          assetB: usdc,
+          maxAmountA: '200',
+          maxAmountB: '50',
+          minPrice,
+          maxPrice,
+          spotPrice,
+        }),
+      ).rejects.toThrow(field);
+      expect(server.submitTransaction).not.toHaveBeenCalled();
+    },
+  );
 });

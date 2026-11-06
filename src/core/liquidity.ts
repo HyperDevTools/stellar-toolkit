@@ -48,32 +48,61 @@ export class LiquidityPoolManager {
   ): string {
     const a = Number(amountA);
     const b = Number(amountB);
-    if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b <= 0) {
-      throw new Error('Deposit amounts must be positive numbers');
+    if (!Number.isFinite(a) || a <= 0) {
+      throw new Error('amountA must be a finite positive number');
+    }
+    if (!Number.isFinite(b) || b <= 0) {
+      throw new Error('amountB must be a finite positive number');
     }
 
-    if (
-      reserveA !== undefined &&
-      reserveB !== undefined &&
-      totalShares !== undefined &&
-      Number(totalShares) > 0
-    ) {
+    const hasReserveInputs = [reserveA, reserveB, totalShares].some((value) => value !== undefined);
+    const hasAllReserveInputs = [reserveA, reserveB, totalShares].every(
+      (value) => value !== undefined,
+    );
+    if (hasReserveInputs && !hasAllReserveInputs) {
+      throw new Error('reserveA, reserveB, and totalShares must be provided together');
+    }
+
+    let minted: number;
+    if (hasAllReserveInputs) {
       const rA = Number(reserveA);
       const rB = Number(reserveB);
       const shares = Number(totalShares);
-      const minted = Math.min((a * shares) / rA, (b * shares) / rB);
-      return minted.toFixed(7);
+      if (!Number.isFinite(rA) || rA <= 0) {
+        throw new Error('reserveA must be a finite positive number');
+      }
+      if (!Number.isFinite(rB) || rB <= 0) {
+        throw new Error('reserveB must be a finite positive number');
+      }
+      if (!Number.isFinite(shares) || shares <= 0) {
+        throw new Error('totalShares must be a finite positive number');
+      }
+      minted = Math.min((a * shares) / rA, (b * shares) / rB);
+    } else {
+      minted = Math.sqrt(a) * Math.sqrt(b);
     }
 
-    return Math.sqrt(a * b).toFixed(7);
+    if (!Number.isFinite(minted) || minted <= 0) {
+      throw new Error('LP share estimate must be a finite positive number');
+    }
+    return minted.toFixed(7);
   }
 
   /**
    * Validate that the current pool spot price falls within [minPrice, maxPrice]
    */
   validatePriceSlippage(spotPrice: number, minPrice: number, maxPrice: number): void {
-    if (minPrice <= 0 || maxPrice <= 0 || minPrice > maxPrice) {
-      throw new Error('Invalid price bounds');
+    if (!Number.isFinite(minPrice) || minPrice <= 0) {
+      throw new Error('minPrice must be a finite positive number');
+    }
+    if (!Number.isFinite(maxPrice) || maxPrice <= 0) {
+      throw new Error('maxPrice must be a finite positive number');
+    }
+    if (minPrice > maxPrice) {
+      throw new Error('minPrice must be less than or equal to maxPrice');
+    }
+    if (!Number.isFinite(spotPrice) || spotPrice <= 0) {
+      throw new Error('spotPrice must be a finite positive number');
     }
     if (spotPrice < minPrice || spotPrice > maxPrice) {
       throw new Error(
@@ -89,9 +118,18 @@ export class LiquidityPoolManager {
     const { accountSecret, assetA, assetB, maxAmountA, maxAmountB, minPrice, maxPrice, spotPrice } =
       options;
 
-    const minP = parseFloat(minPrice);
-    const maxP = parseFloat(maxPrice);
-    const impliedPrice = spotPrice ?? parseFloat(maxAmountA) / parseFloat(maxAmountB);
+    const amountA = Number(maxAmountA);
+    const amountB = Number(maxAmountB);
+    if (!Number.isFinite(amountA) || amountA <= 0) {
+      throw new Error('maxAmountA must be a finite positive number');
+    }
+    if (!Number.isFinite(amountB) || amountB <= 0) {
+      throw new Error('maxAmountB must be a finite positive number');
+    }
+
+    const minP = Number(minPrice);
+    const maxP = Number(maxPrice);
+    const impliedPrice = spotPrice ?? amountA / amountB;
     this.validatePriceSlippage(impliedPrice, minP, maxP);
 
     const keypair = Keypair.fromSecret(accountSecret);
