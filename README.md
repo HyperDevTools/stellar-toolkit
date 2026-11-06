@@ -6,6 +6,8 @@
 
 A comprehensive TypeScript/JavaScript utility library that simplifies common Stellar blockchain operations. Built for developers who want clean, tested, and production-ready helpers for Stellar development.
 
+**Documentation site:** [Stellar Toolkit guide](https://hyperdevtools.github.io/stellar-toolkit/)
+
 **Current Version:** v0.1.0
 
 ## 🎯 Overview

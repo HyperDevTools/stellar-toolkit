@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="API guide and secret-handling checklist for Stellar Toolkit.">
+    <title>Stellar Toolkit - Build with guardrails</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #17213a;
+        --muted: #5e6b83;
+        --paper: #f5f8fc;
+        --white: #fff;
+        --blue: #324fe0;
+        --aqua: #c9f4e8;
+        --line: #d8e1ef;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; color: var(--ink); background: var(--paper); line-height: 1.65; }
+      a { color: var(--blue); }
+      .wrap { width: min(1120px, calc(100% - 40px)); margin: 0 auto; }
+      header { background: var(--white); border-bottom: 1px solid var(--line); }
+      .nav { min-height: 76px; display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+      .logo { color: var(--ink); font-weight: 800; text-decoration: none; letter-spacing: -.03em; }
+      .logo span { display: inline-grid; place-items: center; width: 34px; height: 34px; margin-right: 8px; border-radius: 10px; background: var(--aqua); color: #11694f; }
+      nav { display: flex; flex-wrap: wrap; gap: 22px; font-size: .9rem; }
+      nav a { color: var(--muted); text-decoration: none; }
+      .hero { padding: 76px 0 70px; display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(280px, .85fr); gap: 48px; align-items: center; }
+      .kicker { color: var(--blue); font-size: .78rem; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
+      h1 { max-width: 700px; margin: 16px 0; font-size: clamp(2.65rem, 6vw, 5.2rem); line-height: 1.02; letter-spacing: -.065em; }
+      h2 { margin: 0 0 12px; font-size: 1.8rem; letter-spacing: -.04em; }
+      h3 { margin: 0 0 8px; font-size: 1.08rem; }
+      p { color: var(--muted); }
+      .lead { max-width: 650px; font-size: 1.15rem; }
+      .buttons { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 26px; }
+      .btn { display: inline-block; padding: 11px 16px; border: 1px solid var(--blue); border-radius: 7px; color: var(--blue); text-decoration: none; font-weight: 700; }
+      .btn.primary { color: white; background: var(--blue); }
+      .terminal { overflow: hidden; border-radius: 13px; background: #17213a; color: #e7eefb; box-shadow: 0 24px 60px #25355724; }
+      .terminal-head { padding: 13px 17px; background: #202d49; color: #aebbd2; font-size: .82rem; }
+      pre { overflow-x: auto; margin: 0; padding: 22px; font: .9rem/1.8 ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .prompt { color: #7de1bd; }
+      section { padding: 58px 0; }
+      .heading { max-width: 700px; margin-bottom: 28px; }
+      .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+      .card { border: 1px solid var(--line); border-radius: 12px; background: var(--white); padding: 24px; }
+      .number { display: inline-block; margin-bottom: 18px; color: var(--blue); font-size: .8rem; font-weight: 800; letter-spacing: .12em; }
+      .codebox { overflow-x: auto; border-radius: 12px; background: #17213a; color: #e7eefb; padding: 24px; }
+      .codebox pre { padding: 0; }
+      .safety { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; border: 1px solid #b8eadb; border-radius: 14px; background: #e9faf4; padding: 28px; }
+      .safety h2 { color: #11694f; }
+      .safety p { color: #3e6458; }
+      .safety ul { margin: 8px 0 0; padding-left: 20px; color: #315a4d; }
+      .safety li + li { margin-top: 7px; }
+      footer { margin-top: 28px; padding: 30px 0 44px; border-top: 1px solid var(--line); color: var(--muted); font-size: .9rem; }
+      @media (max-width: 760px) {
+        .hero { grid-template-columns: 1fr; padding: 55px 0; }
+        .cards, .safety { grid-template-columns: 1fr; }
+        .nav { align-items: flex-start; flex-direction: column; padding: 16px 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="wrap nav">
+        <a class="logo" href="#top"><span aria-hidden="true">ST</span> Stellar Toolkit</a>
+        <nav aria-label="Main navigation">
+          <a href="#api">API map</a>
+          <a href="#start">Quick start</a>
+          <a href="#security">Key safety</a>
+          <a href="https://github.com/HyperDevTools/stellar-toolkit">GitHub</a>
+        </nav>
+      </div>
+    </header>
+    <main id="top" class="wrap">
+      <div class="hero">
+        <div>
+          <div class="kicker">TypeScript SDK companion</div>
+          <h1>Useful Stellar operations, in one toolkit.</h1>
+          <p class="lead">A compact wrapper around the Stellar SDK for account lookups, payments, trustlines, and asset utilities. Start on testnet, keep signing keys on a trusted server, and explicitly review every transaction.</p>
+          <div class="buttons">
+            <a class="btn primary" href="#start">Get started</a>
+            <a class="btn" href="https://github.com/HyperDevTools/stellar-toolkit/tree/main/docs">Read repository docs</a>
+          </div>
+        </div>
+        <aside class="terminal" aria-label="Install command">
+          <div class="terminal-head">node / terminal</div>
+          <pre><span class="prompt">$</span> npm install @hyperdevtools/stellar-toolkit
+
+<span class="prompt">$</span> node your-script.js
+// configure testnet first</pre>
+        </aside>
+      </div>
+
+      <section id="api">
+        <div class="heading">
+          <div class="kicker">01 / API map</div>
+          <h2>One entry point, focused operations.</h2>
+          <p>Instantiate <code>StellarToolkit</code> with a network and optional Horizon URL. Operations that submit transactions require secret material and return the resulting transaction hash.</p>
+        </div>
+        <div class="cards">
+          <article class="card"><span class="number">01 / ACCOUNTS</span><h3>Look up and fund</h3><p><code>generateKeypair</code>, <code>getAccount</code>, <code>getBalances</code>, <code>accountExists</code>, <code>getNativeBalance</code>, and testnet-only funding.</p></article>
+          <article class="card"><span class="number">02 / PAYMENTS</span><h3>Send and convert</h3><p><code>sendPayment</code> submits a payment; <code>sendPathPayment</code> submits a strict-receive path payment with a destination amount and maximum send amount.</p></article>
+          <article class="card"><span class="number">03 / ASSETS</span><h3>Trust and format</h3><p>Add or remove trustlines, build a custom asset value, and format native or issued assets for display.</p></article>
+        </div>
+      </section>
+
+      <section id="start">
+        <div class="heading">
+          <div class="kicker">02 / Quick start</div>
+          <h2>Read first. Sign only when ready.</h2>
+          <p>This server-side example creates a testnet keypair, funds it through the testnet friendbot, and reads its balances. Keep the secret out of logs and source control.</p>
+        </div>
+        <div class="codebox"><pre><code>import { StellarToolkit } from '@hyperdevtools/stellar-toolkit';
+
+const toolkit = new StellarToolkit({ network: 'testnet' });
+const keypair = toolkit.generateKeypair();
+
+// Public address is safe to share; store the secret securely if needed.
+console.log('Public key:', keypair.publicKey);
+await toolkit.fundTestnetAccount(keypair.publicKey);
+const balances = await toolkit.getBalances(keypair.publicKey);
+console.log('Testnet balances:', balances);</code></pre></div>
+        <p>For a payment, load the source secret from a server-side secret manager or protected environment variable, verify the destination and amount, and call <code>sendPayment</code> only after explicit user intent. Never put signing keys in browser code or a <code>NEXT_PUBLIC_*</code> variable.</p>
+      </section>
+
+      <section id="security">
+        <div class="safety">
+          <div>
+            <div class="kicker">03 / Transaction safety</div>
+            <h2>Secret keys are signing authority.</h2>
+            <p>A leaked Stellar secret can authorize transactions from its account. Treat it like a production credential, not ordinary configuration.</p>
+          </div>
+          <ul>
+            <li>Use testnet for development and fund test accounts only.</li>
+            <li>Keep secrets server-side; never commit, print, or send them to analytics.</li>
+            <li>Validate the destination, asset issuer, amount, and network before signing.</li>
+            <li>Use a dedicated, minimally funded account for experiments; rotate a key if exposed.</li>
+            <li>Check transaction results and error handling before relying on an operation.</li>
+          </ul>
+        </div>
+        <p>Browse the complete exported types in <a href="https://github.com/HyperDevTools/stellar-toolkit/blob/main/src/types.ts">src/types.ts</a> and implementation in <a href="https://github.com/HyperDevTools/stellar-toolkit/tree/main/src/core">src/core</a>.</p>
+      </section>
+    </main>
+    <footer><div class="wrap">Stellar Toolkit | Open-source developer tooling | <a href="https://github.com/HyperDevTools/stellar-toolkit/blob/main/LICENSE">MIT License</a></div></footer>
+  </body>
+</html>
