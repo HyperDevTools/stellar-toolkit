@@ -4,10 +4,16 @@ import {
   BASE_FEE,
   Keypair,
   Networks,
+  NotFoundError,
   Operation,
   TransactionBuilder,
 } from 'stellar-sdk';
-import { StellarToolkit } from '../index';
+import {
+  StellarToolkit,
+  NetworkConnectionError,
+  NetworkTimeoutError,
+  ValidationError,
+} from '../index';
 
 describe('StellarToolkit - Account & Multi-Sig Operations', () => {
   let toolkit: StellarToolkit;
@@ -36,13 +42,66 @@ describe('StellarToolkit - Account & Multi-Sig Operations', () => {
   });
 
   describe('accountExists', () => {
-    it('should return false for non-existent account', async () => {
-      const keypair = toolkit.generateKeypair();
-      const server = (toolkit as unknown as { server: { loadAccount: jest.Mock } }).server;
-      jest.spyOn(server, 'loadAccount').mockRejectedValueOnce(new Error('404 Not Found'));
+    const loadAccount = (tk: StellarToolkit) => {
+      const server = (tk as unknown as { server: { loadAccount: jest.Mock } }).server;
+      return jest.spyOn(server, 'loadAccount');
+    };
 
-      const exists = await toolkit.accountExists(keypair.publicKey);
-      expect(exists).toBe(false);
+    it('returns true when Horizon returns the account', async () => {
+      const { publicKey } = toolkit.generateKeypair();
+      loadAccount(toolkit).mockResolvedValueOnce(new Account(publicKey, '1'));
+      await expect(toolkit.accountExists(publicKey)).resolves.toBe(true);
+    });
+
+    it('returns false for the SDK not-found error or a confirmed HTTP 404', async () => {
+      const { publicKey } = toolkit.generateKeypair();
+      loadAccount(toolkit)
+        .mockRejectedValueOnce(new NotFoundError('Not Found', {}))
+        .mockRejectedValueOnce({ response: { status: 404 } });
+      await expect(toolkit.accountExists(publicKey)).resolves.toBe(false);
+      await expect(toolkit.accountExists(publicKey)).resolves.toBe(false);
+    });
+
+    it.each([
+      { failure: new Error('timeout of 5000ms exceeded'), expected: NetworkTimeoutError },
+      { failure: new Error('Connection failed'), expected: NetworkConnectionError },
+      { failure: { response: { status: 503 } }, expected: NetworkConnectionError },
+      {
+        failure: new Error('Proxy mentioned 404 while unavailable'),
+        expected: NetworkConnectionError,
+      },
+    ])('propagates lookup failures as typed errors', async ({ failure, expected }) => {
+      const { publicKey } = toolkit.generateKeypair();
+      loadAccount(toolkit).mockRejectedValueOnce(failure);
+      await expect(toolkit.accountExists(publicKey)).rejects.toBeInstanceOf(expected);
+    });
+  });
+
+  describe('fundTestnetAccount', () => {
+    afterEach(() => jest.restoreAllMocks());
+
+    it('requests funding for a public key on testnet', async () => {
+      const { publicKey } = toolkit.generateKeypair();
+      const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response());
+      await expect(toolkit.fundTestnetAccount(publicKey)).resolves.toBeUndefined();
+      expect(fetchSpy).toHaveBeenCalledWith(`https://friendbot.stellar.org?addr=${publicKey}`);
+    });
+
+    it('rejects mainnet before calling Friendbot', async () => {
+      const { publicKey } = toolkit.generateKeypair();
+      const fetchSpy = jest.spyOn(globalThis, 'fetch');
+      const mainnet = new StellarToolkit({ network: 'mainnet' });
+      await expect(mainnet.fundTestnetAccount(publicKey)).rejects.toBeInstanceOf(ValidationError);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('rejects non-public keys without sending or echoing them', async () => {
+      const secret = Keypair.random().secret();
+      const fetchSpy = jest.spyOn(globalThis, 'fetch');
+      const result = toolkit.fundTestnetAccount(secret);
+      await expect(result).rejects.toBeInstanceOf(ValidationError);
+      await expect(result).rejects.not.toThrow(secret);
+      expect(fetchSpy).not.toHaveBeenCalled();
     });
   });
 
@@ -140,6 +199,45 @@ describe('StellarToolkit - Account & Multi-Sig Operations', () => {
       expect(() => toolkit.signMultiSigTransaction(tx, [s1.secret()], 2)).toThrow(
         /Insufficient signatures/i,
       );
+    });
+
+    it('validates thresholds and weights before adding any signatures', () => {
+      const signer = Keypair.random();
+      const other = Keypair.random();
+      const tx = new TransactionBuilder(new Account(signer.publicKey(), '101'), {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.TESTNET,
+      })
+        .addOperation(
+          Operation.payment({
+            destination: other.publicKey(),
+            asset: Asset.native(),
+            amount: '10',
+          }),
+        )
+        .setTimeout(180)
+        .build();
+
+      for (const threshold of [0, -1, 1.5, 256, Infinity, NaN]) {
+        expect(() => toolkit.signMultiSigTransaction(tx, [signer.secret()], threshold)).toThrow(
+          ValidationError,
+        );
+      }
+      for (const weight of [-1, 1.5, 256, Infinity, NaN]) {
+        expect(() => toolkit.signMultiSigTransaction(tx, [signer.secret()], 1, {
+          [signer.publicKey()]: weight,
+        })).toThrow(ValidationError);
+      }
+      expect(() => toolkit.signMultiSigTransaction(tx, [signer.secret(), signer.secret()], 2)).toThrow(
+        /Insufficient/,
+      );
+      expect(() => toolkit.signMultiSigTransaction(tx, [signer.secret(), other.secret()], 2, {
+        [signer.publicKey()]: 1,
+      })).toThrow(/Insufficient/);
+      expect(() => toolkit.signMultiSigTransaction(tx, [signer.secret()], 1, {
+        [signer.publicKey()]: 0,
+      })).toThrow(/Insufficient/);
+      expect(tx.signatures).toHaveLength(0);
     });
 
     it('test_threshold_validation', async () => {

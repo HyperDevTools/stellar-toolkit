@@ -15,12 +15,14 @@
 
 ## Automatic Retry for Transient Network Errors
 
-Use `withRetry` to automatically retry operations that fail with retryable errors (`NetworkTimeoutError`, `NetworkConnectionError`):
+Use `withRetry(operation, maxAttempts = 3, baseDelayMs = 50, maxDelayMs = 30000)` for read operations such as loading balances. The first attempt runs immediately and counts toward `maxAttempts`. A retryable error triggers a delay that doubles on each retry, starting at `baseDelayMs` and capped at `maxDelayMs`. A zero base or maximum disables the delay. Non-retryable errors and the final failed attempt are rethrown immediately.
+
+Attempts must be a positive safe integer. Delays must be integer milliseconds from 0 to 2,147,483,647. Invalid options reject with `ValidationError` before the operation runs.
 
 ```typescript
 import { StellarToolkit, withRetry } from '@hyperdevtools/stellar-toolkit';
 
 const toolkit = new StellarToolkit({ network: 'testnet' });
 
-const balances = await withRetry(() => toolkit.getBalances(publicKey), 3, 200);
+const balances = await withRetry(() => toolkit.getBalances(publicKey), 4, 200, 500);
 ```

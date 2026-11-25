@@ -106,23 +106,36 @@ export class ValidationError extends ToolkitError {
   }
 }
 
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 export async function withRetry<T>(
   operation: () => Promise<T>,
   maxAttempts = 3,
   baseDelayMs = 50,
+  maxDelayMs = 30_000,
 ): Promise<T> {
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
+    throw new ValidationError('maxAttempts', 'Expected a positive safe integer');
+  }
+  for (const [field, delay] of Object.entries({ baseDelayMs, maxDelayMs })) {
+    if (!Number.isInteger(delay) || delay < 0 || delay > MAX_TIMER_DELAY_MS) {
+      throw new ValidationError(field, `Expected an integer from 0 to ${MAX_TIMER_DELAY_MS}`);
+    }
+  }
+
+  let delayMs = Math.min(baseDelayMs, maxDelayMs);
+  for (let attempt = 1; ; attempt += 1) {
     try {
       return await operation();
     } catch (error) {
-      lastError = error;
       const isRetryable = error instanceof ToolkitError && error.retryable;
       if (!isRetryable || attempt === maxAttempts) {
         throw error;
       }
-      await new Promise((resolve) => setTimeout(resolve, baseDelayMs * attempt));
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        delayMs = Math.min(delayMs * 2, maxDelayMs);
+      }
     }
   }
-  throw lastError;
 }

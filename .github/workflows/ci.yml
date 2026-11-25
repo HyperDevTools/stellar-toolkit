@@ -35,6 +35,9 @@ jobs:
       - name: Build project
         run: npm run build
       
+      - name: Inspect npm package
+        run: npm pack --dry-run --ignore-scripts
+
       - name: Check TypeScript
         run: npx tsc --noEmit
   

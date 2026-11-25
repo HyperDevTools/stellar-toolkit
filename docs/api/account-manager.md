@@ -111,7 +111,7 @@ async accountExists(publicKey: string): Promise<boolean>
 **Parameters:**
 - `publicKey` (string): The public key to check
 
-**Returns:** `true` if account exists, `false` otherwise
+**Returns:** `true` for a successful lookup and `false` for a confirmed Horizon 404. Timeouts and other lookup failures reject with a typed network error.
 
 **Example:**
 ```typescript
@@ -163,7 +163,7 @@ async fundTestnetAccount(publicKey: string): Promise<void>
 **Throws:**
 - `Error` if the request fails (network down, invalid key, etc.)
 
-**Note:** Only works on testnet. Will fail on mainnet.
+A mainnet client or an invalid account public key fails validation before an HTTP request is sent. Never pass a secret key to Friendbot.
 
 **Example:**
 ```typescript
@@ -178,6 +178,10 @@ console.log(`Funded with ${balance} XLM`);
 ```
 
 ---
+
+## Signing with multiple signers
+
+`signMultiSigTransaction` accepts an integer threshold from 1 to 255. Without a weight map, each distinct signer counts for one. With an explicit map, only listed weights count, and each weight is an integer from 0 to 255. The helper validates the total before adding signatures to the supplied transaction.
 
 ## Error Handling
 

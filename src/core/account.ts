@@ -1,6 +1,9 @@
 import {
   Keypair,
   Horizon,
+  Networks,
+  NotFoundError,
+  StrKey,
   TransactionBuilder,
   Operation,
   BASE_FEE,
@@ -8,7 +11,12 @@ import {
 } from 'stellar-sdk';
 import { AccountInfo, Balance, MultiSigConfig } from '../types';
 import { Server } from '../utils/network';
-import { AccountNotFoundError, ValidationError } from '../errors';
+import {
+  AccountNotFoundError,
+  NetworkConnectionError,
+  NetworkTimeoutError,
+  ValidationError,
+} from '../errors';
 
 export type AccountResponse = Horizon.AccountResponse;
 
@@ -17,7 +25,7 @@ export const MAX_STELLAR_SIGNERS = 20;
 export class AccountManager {
   constructor(
     private server: Server,
-    private networkPassphrase = 'Test SDF Network ; September 2015',
+    private networkPassphrase: string = Networks.TESTNET,
   ) {}
 
   /**
@@ -38,11 +46,24 @@ export class AccountManager {
     try {
       return await this.server.loadAccount(publicKey);
     } catch (error: unknown) {
-      const status = (error as { response?: { status?: number } })?.response?.status;
-      if (status === 404 || String(error).includes('404') || String(error).includes('Not Found')) {
+      const result = error as { response?: { status?: number }; code?: string } | undefined;
+      const status = result?.response?.status;
+      if (status === 404 || error instanceof NotFoundError) {
         throw new AccountNotFoundError(publicKey);
       }
-      throw new Error(`Failed to load account ${publicKey}: ${error}`);
+      if (
+        status === 408 ||
+        status === 504 ||
+        result?.code === 'ECONNABORTED' ||
+        result?.code === 'ETIMEDOUT' ||
+        (error instanceof Error && /^timeout of \d+ms exceeded$/i.test(error.message))
+      ) {
+        throw new NetworkTimeoutError('Horizon account lookup');
+      }
+      throw new NetworkConnectionError(
+        'account lookup',
+        status === undefined ? undefined : `HTTP ${status}`,
+      );
     }
   }
 
@@ -55,14 +76,16 @@ export class AccountManager {
   }
 
   /**
-   * Check if account exists on the network
+   * Return false only when Horizon confirms the account is missing.
+   * Timeouts and other lookup errors are propagated to callers.
    */
   async accountExists(publicKey: string): Promise<boolean> {
     try {
-      await this.server.loadAccount(publicKey);
+      await this.loadAccount(publicKey);
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      if (error instanceof AccountNotFoundError) return false;
+      throw error;
     }
   }
 
@@ -79,15 +102,23 @@ export class AccountManager {
    * Fund account on testnet using Friendbot
    */
   async fundTestnetAccount(publicKey: string): Promise<void> {
+    if (this.networkPassphrase !== Networks.TESTNET) {
+      throw new ValidationError('network', 'Friendbot funding requires a testnet client');
+    }
+    if (!StrKey.isValidEd25519PublicKey(publicKey)) {
+      throw new ValidationError('publicKey', 'Friendbot requires a Stellar account public key');
+    }
+
+    let response: Response;
     try {
-      const response = await fetch(
+      response = await fetch(
         `https://friendbot.stellar.org?addr=${encodeURIComponent(publicKey)}`,
       );
-      if (!response.ok) {
-        throw new Error(`Friendbot request failed: ${response.statusText}`);
-      }
-    } catch (error) {
-      throw new Error(`Failed to fund testnet account: ${error}`);
+    } catch {
+      throw new NetworkConnectionError('Friendbot');
+    }
+    if (!response.ok) {
+      throw new NetworkConnectionError('Friendbot', `HTTP ${response.status}`);
     }
   }
 
@@ -242,22 +273,31 @@ export class AccountManager {
     requiredThreshold = 1,
     signerWeights?: Record<string, number>,
   ): Transaction {
-    const uniqueSecrets = Array.from(new Set(signerSecrets));
-    let accumulatedWeight = 0;
-
-    for (const secret of uniqueSecrets) {
-      const kp = Keypair.fromSecret(secret);
-      const weight = signerWeights ? (signerWeights[kp.publicKey()] ?? 1) : 1;
-      accumulatedWeight += weight;
-      transaction.sign(kp);
+    if (!Number.isInteger(requiredThreshold) || requiredThreshold < 1 || requiredThreshold > 255) {
+      throw new ValidationError('requiredThreshold', 'Threshold must be an integer from 1 to 255');
+    }
+    for (const weight of Object.values(signerWeights ?? {})) {
+      if (!Number.isInteger(weight) || weight < 0 || weight > 255) {
+        throw new ValidationError('signerWeights', 'Each weight must be an integer from 0 to 255');
+      }
     }
 
+    const signers = Array.from(new Set(signerSecrets), (secret) => Keypair.fromSecret(secret));
+    const accumulatedWeight = signers.reduce((total, signer) => {
+      if (!signerWeights) return total + 1;
+      const key = signer.publicKey();
+      return (
+        total + (Object.prototype.hasOwnProperty.call(signerWeights, key) ? signerWeights[key] : 0)
+      );
+    }, 0);
+
     if (accumulatedWeight < requiredThreshold) {
-      throw new Error(
+      throw new ValidationError(
+        'signerWeights',
         `Insufficient signatures: accumulated weight ${accumulatedWeight} is below required threshold ${requiredThreshold}`,
       );
     }
-
+    transaction.sign(...signers);
     return transaction;
   }
 }
