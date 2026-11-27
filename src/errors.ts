@@ -106,35 +106,120 @@ export class ValidationError extends ToolkitError {
   }
 }
 
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
+export const DEFAULT_MAX_RETRY_ATTEMPTS = 3;
+export const DEFAULT_BASE_RETRY_DELAY_MS = 50;
+export const DEFAULT_MAX_RETRY_DELAY_MS = 30_000;
+/** Maximum 32-bit signed integer timer delay supported by Node.js `setTimeout` (~24.8 days). */
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
+export interface RetryOptions {
+  maxAttempts?: number;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+}
+
+/**
+ * Compute bounded deterministic exponential backoff delay for 1-indexed failed `attempt`:
+ * `min(maxDelayMs, MAX_TIMER_DELAY_MS, baseDelayMs * 2^(attempt - 1))`.
+ */
+export function calculateRetryDelayMs(
+  attempt: number,
+  baseDelayMs: number,
+  maxDelayMs = DEFAULT_MAX_RETRY_DELAY_MS,
+): number {
+  const ceilingMs = Math.min(maxDelayMs, MAX_TIMER_DELAY_MS);
+  if (baseDelayMs === 0 || ceilingMs === 0) {
+    return 0;
+  }
+  const boundedBase = Math.min(baseDelayMs, ceilingMs);
+  const exponent = attempt - 1;
+  if (exponent >= 53) {
+    return ceilingMs;
+  }
+  const rawDelay = boundedBase * 2 ** exponent;
+  if (!Number.isFinite(rawDelay) || rawDelay > ceilingMs) {
+    return ceilingMs;
+  }
+  return rawDelay;
+}
+
+export async function withRetry<T>(operation: () => Promise<T>, options?: RetryOptions): Promise<T>;
 export async function withRetry<T>(
   operation: () => Promise<T>,
-  maxAttempts = 3,
-  baseDelayMs = 50,
-  maxDelayMs = 30_000,
+  maxAttempts?: number,
+  baseDelayMs?: number,
+  maxDelayMs?: number,
+): Promise<T>;
+export async function withRetry<T>(
+  operation: () => Promise<T>,
+  optionsOrMaxAttempts: number | RetryOptions = DEFAULT_MAX_RETRY_ATTEMPTS,
+  baseDelayMsArg = DEFAULT_BASE_RETRY_DELAY_MS,
+  maxDelayMsArg?: number,
 ): Promise<T> {
-  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
-    throw new ValidationError('maxAttempts', 'Expected a positive safe integer');
+  if (typeof operation !== 'function') {
+    throw new ValidationError('operation', 'Retry operation must be a function');
   }
-  for (const [field, delay] of Object.entries({ baseDelayMs, maxDelayMs })) {
-    if (!Number.isInteger(delay) || delay < 0 || delay > MAX_TIMER_DELAY_MS) {
-      throw new ValidationError(field, `Expected an integer from 0 to ${MAX_TIMER_DELAY_MS}`);
+
+  let maxAttempts: number;
+  let baseDelayMs: number;
+  let explicitMaxDelayMs: number | undefined;
+
+  if (typeof optionsOrMaxAttempts === 'object' && optionsOrMaxAttempts !== null) {
+    if (Array.isArray(optionsOrMaxAttempts)) {
+      throw new ValidationError('options', 'Retry options must be a plain object');
+    }
+    maxAttempts = optionsOrMaxAttempts.maxAttempts ?? DEFAULT_MAX_RETRY_ATTEMPTS;
+    baseDelayMs = optionsOrMaxAttempts.baseDelayMs ?? DEFAULT_BASE_RETRY_DELAY_MS;
+    explicitMaxDelayMs = optionsOrMaxAttempts.maxDelayMs;
+  } else {
+    maxAttempts = optionsOrMaxAttempts;
+    baseDelayMs = baseDelayMsArg;
+    explicitMaxDelayMs = maxDelayMsArg;
+  }
+
+  if (typeof maxAttempts !== 'number' || !Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
+    throw new ValidationError(
+      'maxAttempts',
+      'maxAttempts must be a safe integer greater than or equal to 1',
+    );
+  }
+
+  if (typeof baseDelayMs !== 'number' || !Number.isFinite(baseDelayMs) || baseDelayMs < 0) {
+    throw new ValidationError('baseDelayMs', 'baseDelayMs must be a finite non-negative number');
+  }
+
+  if (explicitMaxDelayMs !== undefined) {
+    if (
+      typeof explicitMaxDelayMs !== 'number' ||
+      !Number.isFinite(explicitMaxDelayMs) ||
+      explicitMaxDelayMs < 0
+    ) {
+      throw new ValidationError('maxDelayMs', 'maxDelayMs must be a finite non-negative number');
+    }
+    if (explicitMaxDelayMs > 0 && explicitMaxDelayMs < baseDelayMs) {
+      throw new ValidationError(
+        'maxDelayMs',
+        `maxDelayMs (${explicitMaxDelayMs}) must be greater than or equal to baseDelayMs (${baseDelayMs})`,
+      );
     }
   }
 
-  let delayMs = Math.min(baseDelayMs, maxDelayMs);
+  const resolvedMaxDelayMs =
+    explicitMaxDelayMs !== undefined
+      ? explicitMaxDelayMs
+      : Math.max(DEFAULT_MAX_RETRY_DELAY_MS, Math.min(baseDelayMs, MAX_TIMER_DELAY_MS));
+
   for (let attempt = 1; ; attempt += 1) {
     try {
       return await operation();
     } catch (error) {
       const isRetryable = error instanceof ToolkitError && error.retryable;
-      if (!isRetryable || attempt === maxAttempts) {
+      if (!isRetryable || attempt >= maxAttempts) {
         throw error;
       }
+      const delayMs = calculateRetryDelayMs(attempt, baseDelayMs, resolvedMaxDelayMs);
       if (delayMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
-        delayMs = Math.min(delayMs * 2, maxDelayMs);
       }
     }
   }

@@ -179,9 +179,34 @@ console.log(`Funded with ${balance} XLM`);
 
 ---
 
-## Signing with multiple signers
+### `signMultiSigTransaction(transaction, signerSecrets, requiredThreshold?, signerWeights?)`
 
-`signMultiSigTransaction` accepts an integer threshold from 1 to 255. Without a weight map, each distinct signer counts for one. With an explicit map, only listed weights count, and each weight is an integer from 0 to 255. The helper validates the total before adding signatures to the supplied transaction.
+Validate threshold and signer weights, deduplicate signers by public key, verify that accumulated weight meets `requiredThreshold`, and sign `transaction` atomically.
+
+**Signature:**
+```typescript
+signMultiSigTransaction(
+  transaction: Transaction,
+  signerSecrets: string[],
+  requiredThreshold?: number,
+  signerWeights?: Record<string, number>,
+): Transaction
+```
+
+**Parameters:**
+- `transaction` (`Transaction`): Stellar SDK `Transaction` instance to sign.
+- `signerSecrets` (`string[]`): Non-empty array of Stellar secret keys (`S...`). Duplicate secrets resolving to the same public key are counted and applied once.
+- `requiredThreshold` (`number`, default `1`): Required operation threshold; must be a finite integer between `1` and `255`.
+- `signerWeights` (`Record<string, number>`, optional): Map of Stellar public keys (`G...`) to active integer weights (`1`–`255`).
+  - **Omitted policy**: When `signerWeights` is `undefined`, every unique signer contributes weight `1`.
+  - **Explicit map policy**: When `signerWeights` is provided, every entry must be a finite integer in `1..255` and every participating signer must have an own property in `signerWeights`. Unlisted signers throw `ValidationError` rather than defaulting to `1` (preventing silent threshold inflation and `tx_bad_auth_extra` rejections).
+
+**Throws:**
+- `ToolkitError` (`ERR_INVALID_THRESHOLD`) if `requiredThreshold` is outside `1..255` or non-integer.
+- `ValidationError` (`ERR_VALIDATION_FAILED`) if `transaction`, `signerSecrets`, or `signerWeights` is invalid or omits a participating signer.
+- `ToolkitError` (`ERR_INSUFFICIENT_SIGNATURES`) if total unique signer weight is less than `requiredThreshold`. On any validation or threshold error, `transaction` is never mutated.
+
+---
 
 ## Error Handling
 

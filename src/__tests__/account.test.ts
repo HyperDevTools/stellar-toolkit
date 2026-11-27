@@ -9,9 +9,11 @@ import {
   TransactionBuilder,
 } from 'stellar-sdk';
 import {
-  StellarToolkit,
+  ErrorCode,
   NetworkConnectionError,
   NetworkTimeoutError,
+  StellarToolkit,
+  ToolkitError,
   ValidationError,
 } from '../index';
 
@@ -66,6 +68,8 @@ describe('StellarToolkit - Account & Multi-Sig Operations', () => {
       { failure: new Error('timeout of 5000ms exceeded'), expected: NetworkTimeoutError },
       { failure: new Error('Connection failed'), expected: NetworkConnectionError },
       { failure: { response: { status: 503 } }, expected: NetworkConnectionError },
+      { failure: { response: { status: 504 } }, expected: NetworkTimeoutError },
+      { failure: new Error('DNS host not found'), expected: NetworkConnectionError },
       {
         failure: new Error('Proxy mentioned 404 while unavailable'),
         expected: NetworkConnectionError,
@@ -201,45 +205,6 @@ describe('StellarToolkit - Account & Multi-Sig Operations', () => {
       );
     });
 
-    it('validates thresholds and weights before adding any signatures', () => {
-      const signer = Keypair.random();
-      const other = Keypair.random();
-      const tx = new TransactionBuilder(new Account(signer.publicKey(), '101'), {
-        fee: BASE_FEE,
-        networkPassphrase: Networks.TESTNET,
-      })
-        .addOperation(
-          Operation.payment({
-            destination: other.publicKey(),
-            asset: Asset.native(),
-            amount: '10',
-          }),
-        )
-        .setTimeout(180)
-        .build();
-
-      for (const threshold of [0, -1, 1.5, 256, Infinity, NaN]) {
-        expect(() => toolkit.signMultiSigTransaction(tx, [signer.secret()], threshold)).toThrow(
-          ValidationError,
-        );
-      }
-      for (const weight of [-1, 1.5, 256, Infinity, NaN]) {
-        expect(() => toolkit.signMultiSigTransaction(tx, [signer.secret()], 1, {
-          [signer.publicKey()]: weight,
-        })).toThrow(ValidationError);
-      }
-      expect(() => toolkit.signMultiSigTransaction(tx, [signer.secret(), signer.secret()], 2)).toThrow(
-        /Insufficient/,
-      );
-      expect(() => toolkit.signMultiSigTransaction(tx, [signer.secret(), other.secret()], 2, {
-        [signer.publicKey()]: 1,
-      })).toThrow(/Insufficient/);
-      expect(() => toolkit.signMultiSigTransaction(tx, [signer.secret()], 1, {
-        [signer.publicKey()]: 0,
-      })).toThrow(/Insufficient/);
-      expect(tx.signatures).toHaveLength(0);
-    });
-
     it('test_threshold_validation', async () => {
       const master = Keypair.random();
       const signer2 = Keypair.random();
@@ -350,6 +315,170 @@ describe('StellarToolkit - Account & Multi-Sig Operations', () => {
         [s1.publicKey()]: 3,
       });
       expect(signed.signatures.length).toBe(1);
+    });
+
+    describe('signMultiSigTransaction security validation (#31)', () => {
+      const buildSampleTx = (sourceKey: Keypair) => {
+        const dest = Keypair.random();
+        const account = new Account(sourceKey.publicKey(), '200');
+        return new TransactionBuilder(account, {
+          fee: BASE_FEE,
+          networkPassphrase: Networks.TESTNET,
+        })
+          .addOperation(
+            Operation.payment({
+              destination: dest.publicKey(),
+              asset: Asset.native(),
+              amount: '5',
+            }),
+          )
+          .setTimeout(180)
+          .build();
+      };
+
+      it('rejects zero, negative, fractional, non-finite, and excessive requiredThreshold without mutating transaction', () => {
+        const s1 = Keypair.random();
+        const invalidThresholds = [
+          0,
+          -1,
+          -255,
+          1.5,
+          2.01,
+          Number.NaN,
+          Number.POSITIVE_INFINITY,
+          256,
+          1000,
+        ];
+
+        for (const threshold of invalidThresholds) {
+          const tx = buildSampleTx(s1);
+          expect(() => toolkit.signMultiSigTransaction(tx, [s1.secret()], threshold)).toThrow(
+            ToolkitError,
+          );
+          try {
+            toolkit.signMultiSigTransaction(tx, [s1.secret()], threshold);
+          } catch (err) {
+            expect((err as ToolkitError).code).toBe(ErrorCode.INVALID_THRESHOLD);
+          }
+          expect(tx.signatures).toHaveLength(0);
+        }
+      });
+
+      it('rejects zero, negative, fractional, non-finite, and excessive signerWeights without mutating transaction', () => {
+        const s1 = Keypair.random();
+        const invalidWeights = [
+          0,
+          -1,
+          -10,
+          0.5,
+          2.75,
+          Number.NaN,
+          Number.POSITIVE_INFINITY,
+          256,
+          999,
+        ];
+
+        for (const weight of invalidWeights) {
+          const tx = buildSampleTx(s1);
+          expect(() =>
+            toolkit.signMultiSigTransaction(tx, [s1.secret()], 1, {
+              [s1.publicKey()]: weight,
+            }),
+          ).toThrow(ValidationError);
+          expect(tx.signatures).toHaveLength(0);
+        }
+      });
+
+      it('counts duplicate signers (including whitespace-padded secrets) only once and leaves tx unsigned on failure', () => {
+        const s1 = Keypair.random();
+        const txFail = buildSampleTx(s1);
+
+        expect(() =>
+          toolkit.signMultiSigTransaction(
+            txFail,
+            [s1.secret(), s1.secret(), `  ${s1.secret()}  `],
+            2,
+            { [s1.publicKey()]: 1 },
+          ),
+        ).toThrow(/Insufficient signatures/i);
+        expect(txFail.signatures).toHaveLength(0);
+
+        const txPass = buildSampleTx(s1);
+        const signed = toolkit.signMultiSigTransaction(
+          txPass,
+          [s1.secret(), s1.secret(), ` ${s1.secret()} `],
+          2,
+          { [s1.publicKey()]: 2 },
+        );
+        expect(signed.signatures).toHaveLength(1);
+      });
+
+      it('rejects missing signer weights when signerWeights is provided instead of silently inflating weight', () => {
+        const authorized = Keypair.random();
+        const unlisted = Keypair.random();
+        const tx = buildSampleTx(authorized);
+
+        expect(() =>
+          toolkit.signMultiSigTransaction(tx, [authorized.secret(), unlisted.secret()], 2, {
+            [authorized.publicKey()]: 1,
+          }),
+        ).toThrow(ValidationError);
+        expect(tx.signatures).toHaveLength(0);
+      });
+
+      it('does not use inherited Object.prototype properties as signer weights', () => {
+        const s1 = Keypair.random();
+        const tx = buildSampleTx(s1);
+        const proto = { [s1.publicKey()]: 5 };
+        const weightsWithInherited = Object.create(proto) as Record<string, number>;
+
+        expect(() =>
+          toolkit.signMultiSigTransaction(tx, [s1.secret()], 1, weightsWithInherited),
+        ).toThrow(ValidationError);
+        expect(tx.signatures).toHaveLength(0);
+      });
+
+      it('leaves transaction completely untouched when accumulated weight is insufficient', () => {
+        const s1 = Keypair.random();
+        const s2 = Keypair.random();
+        const tx = buildSampleTx(s1);
+
+        try {
+          toolkit.signMultiSigTransaction(tx, [s1.secret(), s2.secret()], 5, {
+            [s1.publicKey()]: 2,
+            [s2.publicKey()]: 2,
+          });
+          throw new Error('Expected signMultiSigTransaction to throw');
+        } catch (err) {
+          expect(err).toBeInstanceOf(ToolkitError);
+          expect((err as ToolkitError).code).toBe(ErrorCode.INSUFFICIENT_SIGNATURES);
+        }
+
+        expect(tx.signatures).toHaveLength(0);
+      });
+
+      it('rejects empty signerSecrets, malformed secrets, invalid transaction, and non-object signerWeights', () => {
+        const s1 = Keypair.random();
+        const tx = buildSampleTx(s1);
+
+        expect(() => toolkit.signMultiSigTransaction(tx, [], 1)).toThrow(ValidationError);
+        expect(() => toolkit.signMultiSigTransaction(tx, [''], 1)).toThrow(ValidationError);
+        expect(() => toolkit.signMultiSigTransaction(tx, ['not-a-valid-secret'], 1)).toThrow(
+          ValidationError,
+        );
+        expect(() =>
+          toolkit.signMultiSigTransaction(null as unknown as never, [s1.secret()], 1),
+        ).toThrow(ValidationError);
+        expect(() =>
+          toolkit.signMultiSigTransaction(
+            tx,
+            [s1.secret()],
+            1,
+            [] as unknown as Record<string, number>,
+          ),
+        ).toThrow(ValidationError);
+        expect(tx.signatures).toHaveLength(0);
+      });
     });
   });
 });

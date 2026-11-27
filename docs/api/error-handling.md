@@ -15,14 +15,29 @@
 
 ## Automatic Retry for Transient Network Errors
 
-Use `withRetry(operation, maxAttempts = 3, baseDelayMs = 50, maxDelayMs = 30000)` for read operations such as loading balances. The first attempt runs immediately and counts toward `maxAttempts`. A retryable error triggers a delay that doubles on each retry, starting at `baseDelayMs` and capped at `maxDelayMs`. A zero base or maximum disables the delay. Non-retryable errors and the final failed attempt are rethrown immediately.
+Use `withRetry` to automatically retry operations that fail with retryable errors (`ToolkitError` instances where `error.retryable === true`, such as `NetworkTimeoutError` and `NetworkConnectionError`). Non-retryable `ToolkitError` instances and standard `Error` values are rethrown immediately without waiting or retrying.
 
-Attempts must be a positive safe integer. Delays must be integer milliseconds from 0 to 2,147,483,647. Invalid options reject with `ValidationError` before the operation runs.
+### Retry Contract & Exponential Backoff Schedule
+
+- **Schedule**: After failed attempt `k` (`1 <= k < maxAttempts`), `withRetry` waits `min(maxDelayMs, MAX_TIMER_DELAY_MS, baseDelayMs * 2^(k - 1))` milliseconds (deterministic, jitter-free).
+- **Defaults**: `maxAttempts = 3`, `baseDelayMs = 50`, `maxDelayMs = 30_000` (30 seconds).
+- **Validation & overflow safety**:
+  - `maxAttempts` must be a safe integer `>= 1` (`ValidationError` otherwise).
+  - `baseDelayMs` and `maxDelayMs` must be finite numbers `>= 0`, with `maxDelayMs >= baseDelayMs` when explicitly supplied except that zero disables the delay (`ValidationError` otherwise).
+  - Delays exceeding `MAX_TIMER_DELAY_MS` (`2_147_483_647` ms, Node.js `setTimeout` signed 32-bit ceiling) or large exponents are safely clamped so timers never overflow to `1ms` or `Infinity`.
 
 ```typescript
 import { StellarToolkit, withRetry } from '@hyperdevtools/stellar-toolkit';
 
 const toolkit = new StellarToolkit({ network: 'testnet' });
 
-const balances = await withRetry(() => toolkit.getBalances(publicKey), 4, 200, 500);
+// Positional arguments: (operation, maxAttempts?, baseDelayMs?, maxDelayMs?)
+const balances = await withRetry(() => toolkit.getBalances(publicKey), 4, 200, 2_000);
+
+// Options object overload
+const account = await withRetry(() => toolkit.getAccount(publicKey), {
+  maxAttempts: 4,
+  baseDelayMs: 200,
+  maxDelayMs: 2_000,
+});
 ```

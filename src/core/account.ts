@@ -9,24 +9,95 @@ import {
   BASE_FEE,
   Transaction,
 } from 'stellar-sdk';
-import { AccountInfo, Balance, MultiSigConfig } from '../types';
+import { AccountInfo, Balance, ErrorCode, MultiSigConfig } from '../types';
 import { Server } from '../utils/network';
 import {
   AccountNotFoundError,
   NetworkConnectionError,
   NetworkTimeoutError,
+  ToolkitError,
   ValidationError,
 } from '../errors';
 
 export type AccountResponse = Horizon.AccountResponse;
 
 export const MAX_STELLAR_SIGNERS = 20;
+export const MIN_SIGNING_THRESHOLD = 1;
+export const MAX_SIGNING_THRESHOLD = 255;
+export const MIN_SIGNER_WEIGHT = 1;
+export const MAX_SIGNER_WEIGHT = 255;
 
 export class AccountManager {
   constructor(
     private server: Server,
     private networkPassphrase: string = Networks.TESTNET,
   ) {}
+
+  private mapAccountLookupError(publicKey: string, error: unknown): Error {
+    if (error instanceof AccountNotFoundError) {
+      return error;
+    }
+
+    const errObj = error as {
+      name?: string;
+      code?: string;
+      message?: string;
+      status?: number;
+      statusCode?: number;
+      response?: { status?: number; statusCode?: number; statusText?: string };
+    };
+
+    const status =
+      errObj?.response?.status ??
+      errObj?.response?.statusCode ??
+      errObj?.status ??
+      errObj?.statusCode;
+    const code = errObj?.code ?? '';
+    const name = errObj?.name ?? '';
+    const rawMessage =
+      error instanceof Error
+        ? error.message
+        : typeof errObj?.message === 'string'
+          ? errObj.message
+          : String(error);
+
+    if (
+      status === 404 ||
+      error instanceof NotFoundError ||
+      (status === undefined && /^404 Not Found$/i.test(rawMessage))
+    ) {
+      return new AccountNotFoundError(publicKey);
+    }
+
+    if (error instanceof ToolkitError) {
+      return error;
+    }
+
+    const serverUrl =
+      (
+        this.server as unknown as {
+          serverURL?: { toString(): string };
+        }
+      )?.serverURL?.toString?.() || 'horizon';
+
+    if (
+      status === 408 ||
+      status === 504 ||
+      (typeof status !== 'number' &&
+        (code === 'ETIMEDOUT' ||
+          code === 'ECONNABORTED' ||
+          name === 'TimeoutError' ||
+          /timed?\s*out/i.test(rawMessage)))
+    ) {
+      return new NetworkTimeoutError(serverUrl);
+    }
+
+    const detail = status === undefined ? rawMessage : `HTTP ${status}: ${rawMessage}`;
+    if (status !== undefined && status >= 400 && status < 500) {
+      return new Error(`Failed to load account ${publicKey}: ${detail}`);
+    }
+    return new NetworkConnectionError(serverUrl, detail);
+  }
 
   /**
    * Generate a new Stellar keypair
@@ -46,24 +117,7 @@ export class AccountManager {
     try {
       return await this.server.loadAccount(publicKey);
     } catch (error: unknown) {
-      const result = error as { response?: { status?: number }; code?: string } | undefined;
-      const status = result?.response?.status;
-      if (status === 404 || error instanceof NotFoundError) {
-        throw new AccountNotFoundError(publicKey);
-      }
-      if (
-        status === 408 ||
-        status === 504 ||
-        result?.code === 'ECONNABORTED' ||
-        result?.code === 'ETIMEDOUT' ||
-        (error instanceof Error && /^timeout of \d+ms exceeded$/i.test(error.message))
-      ) {
-        throw new NetworkTimeoutError('Horizon account lookup');
-      }
-      throw new NetworkConnectionError(
-        'account lookup',
-        status === undefined ? undefined : `HTTP ${status}`,
-      );
+      throw this.mapAccountLookupError(publicKey, error);
     }
   }
 
@@ -83,8 +137,10 @@ export class AccountManager {
     try {
       await this.loadAccount(publicKey);
       return true;
-    } catch (error) {
-      if (error instanceof AccountNotFoundError) return false;
+    } catch (error: unknown) {
+      if (error instanceof AccountNotFoundError) {
+        return false;
+      }
       throw error;
     }
   }
@@ -265,7 +321,16 @@ export class AccountManager {
   }
 
   /**
-   * Sign a transaction with multiple signers and verify threshold satisfaction
+   * Sign a transaction with multiple signers and verify threshold satisfaction.
+   *
+   * Validation & missing-weight policy:
+   * - `requiredThreshold` must be a finite integer in `1..255`.
+   * - When `signerWeights` is omitted, each unique signer contributes weight `1`.
+   * - When `signerWeights` is provided, every entry must be a finite integer in `1..255`,
+   *   and every participating signer must have an explicit own property in `signerWeights`
+   *   (missing signer weights throw `ValidationError` rather than defaulting to `1`).
+   * - Duplicate secrets resolving to the same public key are counted and applied once.
+   * - `transaction` is never mutated unless all validations and threshold checks succeed.
    */
   signMultiSigTransaction(
     transaction: Transaction,
@@ -273,31 +338,109 @@ export class AccountManager {
     requiredThreshold = 1,
     signerWeights?: Record<string, number>,
   ): Transaction {
-    if (!Number.isInteger(requiredThreshold) || requiredThreshold < 1 || requiredThreshold > 255) {
-      throw new ValidationError('requiredThreshold', 'Threshold must be an integer from 1 to 255');
+    if (!transaction || typeof transaction.sign !== 'function') {
+      throw new ValidationError('transaction', 'A valid Stellar Transaction instance is required');
     }
-    for (const weight of Object.values(signerWeights ?? {})) {
-      if (!Number.isInteger(weight) || weight < 0 || weight > 255) {
-        throw new ValidationError('signerWeights', 'Each weight must be an integer from 0 to 255');
+
+    if (
+      !Number.isInteger(requiredThreshold) ||
+      requiredThreshold < MIN_SIGNING_THRESHOLD ||
+      requiredThreshold > MAX_SIGNING_THRESHOLD
+    ) {
+      throw new ToolkitError(
+        `Invalid requiredThreshold (${String(requiredThreshold)}): threshold out of range (must be an integer between ${MIN_SIGNING_THRESHOLD} and ${MAX_SIGNING_THRESHOLD}).`,
+        {
+          code: ErrorCode.INVALID_THRESHOLD,
+          category: 'validation',
+          recoverySuggestion: `Provide an integer requiredThreshold between ${MIN_SIGNING_THRESHOLD} and ${MAX_SIGNING_THRESHOLD} matching the Stellar operation threshold.`,
+          retryable: false,
+          details: { requiredThreshold },
+        },
+      );
+    }
+
+    if (!Array.isArray(signerSecrets) || signerSecrets.length === 0) {
+      throw new ValidationError('signerSecrets', 'At least one signer secret is required');
+    }
+
+    if (signerWeights !== undefined) {
+      if (
+        typeof signerWeights !== 'object' ||
+        signerWeights === null ||
+        Array.isArray(signerWeights)
+      ) {
+        throw new ValidationError(
+          'signerWeights',
+          'Signer weights must be a plain object mapping Stellar public keys to integer weights',
+        );
+      }
+
+      for (const [publicKey, weight] of Object.entries(signerWeights)) {
+        if (!Number.isInteger(weight) || weight < MIN_SIGNER_WEIGHT || weight > MAX_SIGNER_WEIGHT) {
+          throw new ValidationError(
+            'signerWeights',
+            `Weight for signer ${publicKey} out of range (must be an integer between ${MIN_SIGNER_WEIGHT} and ${MAX_SIGNER_WEIGHT})`,
+          );
+        }
       }
     }
 
-    const signers = Array.from(new Set(signerSecrets), (secret) => Keypair.fromSecret(secret));
-    const accumulatedWeight = signers.reduce((total, signer) => {
-      if (!signerWeights) return total + 1;
-      const key = signer.publicKey();
-      return (
-        total + (Object.prototype.hasOwnProperty.call(signerWeights, key) ? signerWeights[key] : 0)
-      );
-    }, 0);
+    const seenPublicKeys = new Set<string>();
+    const uniqueKeypairs: Keypair[] = [];
+
+    for (const rawSecret of signerSecrets) {
+      if (typeof rawSecret !== 'string' || rawSecret.trim().length === 0) {
+        throw new ValidationError('signerSecrets', 'Each signer secret must be a non-empty string');
+      }
+
+      let kp: Keypair;
+      try {
+        kp = Keypair.fromSecret(rawSecret.trim());
+      } catch {
+        throw new ValidationError('signerSecrets', 'Invalid Stellar secret key');
+      }
+
+      const publicKey = kp.publicKey();
+      if (!seenPublicKeys.has(publicKey)) {
+        seenPublicKeys.add(publicKey);
+        uniqueKeypairs.push(kp);
+      }
+    }
+
+    let accumulatedWeight = 0;
+    for (const kp of uniqueKeypairs) {
+      const publicKey = kp.publicKey();
+      if (signerWeights !== undefined) {
+        if (!Object.prototype.hasOwnProperty.call(signerWeights, publicKey)) {
+          throw new ValidationError(
+            'signerWeights',
+            `Missing signer weight for public key ${publicKey}; all participating signers must be explicitly listed when signerWeights is provided`,
+          );
+        }
+        accumulatedWeight += signerWeights[publicKey];
+      } else {
+        accumulatedWeight += 1;
+      }
+    }
 
     if (accumulatedWeight < requiredThreshold) {
-      throw new ValidationError(
-        'signerWeights',
+      throw new ToolkitError(
         `Insufficient signatures: accumulated weight ${accumulatedWeight} is below required threshold ${requiredThreshold}`,
+        {
+          code: ErrorCode.INSUFFICIENT_SIGNATURES,
+          category: 'transaction',
+          recoverySuggestion:
+            'Provide additional authorized signers whose combined unique weights meet or exceed the required threshold.',
+          retryable: false,
+          details: { accumulatedWeight, requiredThreshold },
+        },
       );
     }
-    transaction.sign(...signers);
+
+    for (const kp of uniqueKeypairs) {
+      transaction.sign(kp);
+    }
+
     return transaction;
   }
 }

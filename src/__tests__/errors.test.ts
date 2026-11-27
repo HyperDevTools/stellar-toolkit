@@ -1,8 +1,10 @@
 import { Keypair } from 'stellar-sdk';
 import {
   AccountNotFoundError,
+  calculateRetryDelayMs,
   ErrorCode,
   InsufficientBalanceError,
+  MAX_TIMER_DELAY_MS,
   NetworkConnectionError,
   NetworkTimeoutError,
   StellarToolkit,
@@ -62,7 +64,6 @@ describe('StellarToolkit - Structured Error System & Recovery', () => {
     ).rejects.toThrow(InsufficientBalanceError);
   });
 
-
   it('test_error_recovery_suggestions', () => {
     const errors = [
       new AccountNotFoundError('GABC'),
@@ -84,6 +85,189 @@ describe('StellarToolkit - Structured Error System & Recovery', () => {
     const unique = new Set(codes);
     expect(unique.size).toBe(codes.length);
   });
+
+  describe('withRetry bounded exponential backoff (#30)', () => {
+    afterEach(() => {
+      jest.restoreAllMocks();
+      jest.useRealTimers();
+    });
+
+    it('uses deterministic exponential backoff capped by maxDelayMs without wall-clock sleeps', async () => {
+      jest.useFakeTimers();
+      const recordedDelays: number[] = [];
+      const realSetTimeout = global.setTimeout;
+      jest.spyOn(global, 'setTimeout').mockImplementation(((
+        handler: (...args: unknown[]) => void,
+        timeout?: number,
+        ...args: unknown[]
+      ) => {
+        recordedDelays.push(timeout ?? 0);
+        return realSetTimeout(handler, timeout, ...args);
+      }) as typeof setTimeout);
+
+      let attempts = 0;
+      const promise = withRetry(
+        async () => {
+          attempts += 1;
+          if (attempts < 5) {
+            throw new NetworkConnectionError('https://horizon-testnet.stellar.org', 'ECONNRESET');
+          }
+          return 'ok';
+        },
+        5,
+        100,
+        250,
+      );
+
+      // Schedule for attempts 1..4 with base=100, max=250: 100, 200, 250, 250
+      await jest.advanceTimersByTimeAsync(100);
+      expect(attempts).toBe(2);
+
+      await jest.advanceTimersByTimeAsync(200);
+      expect(attempts).toBe(3);
+
+      await jest.advanceTimersByTimeAsync(250);
+      expect(attempts).toBe(4);
+
+      await jest.advanceTimersByTimeAsync(250);
+      await expect(promise).resolves.toBe('ok');
+      expect(attempts).toBe(5);
+      expect(recordedDelays).toEqual([100, 200, 250, 250]);
+    });
+
+    it('supports the RetryOptions object overload and rethrows after exhausting maxAttempts', async () => {
+      jest.useFakeTimers();
+      const recordedDelays: number[] = [];
+      const realSetTimeout = global.setTimeout;
+      jest.spyOn(global, 'setTimeout').mockImplementation(((
+        handler: (...args: unknown[]) => void,
+        timeout?: number,
+        ...args: unknown[]
+      ) => {
+        recordedDelays.push(timeout ?? 0);
+        return realSetTimeout(handler, timeout, ...args);
+      }) as typeof setTimeout);
+
+      let attempts = 0;
+      const promise = withRetry(
+        async () => {
+          attempts += 1;
+          throw new NetworkTimeoutError('https://horizon-testnet.stellar.org', 3000);
+        },
+        { maxAttempts: 4, baseDelayMs: 25, maxDelayMs: 60 },
+      );
+      const assertion = expect(promise).rejects.toThrow(NetworkTimeoutError);
+
+      await jest.advanceTimersByTimeAsync(25 + 50 + 60);
+      await assertion;
+      expect(attempts).toBe(4);
+      expect(recordedDelays).toEqual([25, 50, 60]);
+    });
+
+    it('rethrows non-retryable ToolkitErrors and standard Errors immediately without retrying', async () => {
+      jest.useFakeTimers();
+      const timeoutSpy = jest.spyOn(global, 'setTimeout');
+
+      let toolkitCalls = 0;
+      await expect(
+        withRetry(
+          async () => {
+            toolkitCalls += 1;
+            throw new AccountNotFoundError('GABC');
+          },
+          5,
+          100,
+        ),
+      ).rejects.toThrow(AccountNotFoundError);
+      expect(toolkitCalls).toBe(1);
+
+      let genericCalls = 0;
+      await expect(
+        withRetry(
+          async () => {
+            genericCalls += 1;
+            throw new Error('programmer error');
+          },
+          5,
+          100,
+        ),
+      ).rejects.toThrow('programmer error');
+      expect(genericCalls).toBe(1);
+      expect(timeoutSpy).not.toHaveBeenCalled();
+    });
+
+    it('rejects invalid attempt counts, negative or non-finite delays, and inverted delay bounds before calling operation', async () => {
+      let called = false;
+      const op = async () => {
+        called = true;
+        return 'never';
+      };
+
+      const invalidConfigs: Array<() => Promise<unknown>> = [
+        () => withRetry(null as unknown as () => Promise<string>),
+        () => withRetry(op, [] as unknown as never),
+        () => withRetry(op, 0),
+        () => withRetry(op, -2),
+        () => withRetry(op, 1.5),
+        () => withRetry(op, Number.NaN),
+        () => withRetry(op, Number.POSITIVE_INFINITY),
+        () => withRetry(op, 3, -1),
+        () => withRetry(op, 3, Number.NaN),
+        () => withRetry(op, 3, Number.POSITIVE_INFINITY),
+        () => withRetry(op, 3, 50, -5),
+        () => withRetry(op, 3, 50, Number.NaN),
+        () => withRetry(op, 3, 50, Number.POSITIVE_INFINITY),
+        () => withRetry(op, 3, 200, 100),
+        () => withRetry(op, { maxAttempts: 0 }),
+        () => withRetry(op, { baseDelayMs: -10 }),
+        () => withRetry(op, { baseDelayMs: 500, maxDelayMs: 100 }),
+      ];
+
+      for (const invoke of invalidConfigs) {
+        await expect(invoke()).rejects.toThrow(ValidationError);
+      }
+      expect(called).toBe(false);
+    });
+
+    it('safely bounds overflow-sized delays and zero delays without producing Infinity, NaN, or 32-bit timer overflow', async () => {
+      expect(calculateRetryDelayMs(1, 0, 1000)).toBe(0);
+      expect(calculateRetryDelayMs(200, 0, 1000)).toBe(0);
+      expect(calculateRetryDelayMs(1, 100, 0)).toBe(0);
+      expect(calculateRetryDelayMs(80, 100, 5_000)).toBe(5_000);
+      expect(calculateRetryDelayMs(1200, 1e300, Number.MAX_VALUE)).toBe(MAX_TIMER_DELAY_MS);
+      expect(calculateRetryDelayMs(1, MAX_TIMER_DELAY_MS * 4, Number.MAX_VALUE)).toBe(
+        MAX_TIMER_DELAY_MS,
+      );
+
+      jest.useFakeTimers();
+      const recordedDelays: number[] = [];
+      const realSetTimeout = global.setTimeout;
+      jest.spyOn(global, 'setTimeout').mockImplementation(((
+        handler: (...args: unknown[]) => void,
+        timeout?: number,
+        ...args: unknown[]
+      ) => {
+        recordedDelays.push(timeout ?? 0);
+        return realSetTimeout(handler, 0, ...args);
+      }) as typeof setTimeout);
+
+      let attempts = 0;
+      const promise = withRetry(
+        async () => {
+          attempts += 1;
+          if (attempts < 3) {
+            throw new NetworkTimeoutError('https://horizon-testnet.stellar.org');
+          }
+          return 'bounded';
+        },
+        { maxAttempts: 3, baseDelayMs: MAX_TIMER_DELAY_MS * 2, maxDelayMs: Number.MAX_VALUE },
+      );
+
+      await jest.runAllTimersAsync();
+      await expect(promise).resolves.toBe('bounded');
+      expect(recordedDelays).toEqual([MAX_TIMER_DELAY_MS, MAX_TIMER_DELAY_MS]);
+    });
+  });
 });
 
 describe('withRetry', () => {
@@ -91,33 +275,6 @@ describe('withRetry', () => {
 
   beforeEach(() => jest.useFakeTimers());
   afterEach(() => jest.useRealTimers());
-
-  it('uses exponential delays up to the configured cap', async () => {
-    const operation = jest.fn().mockResolvedValue('recovered');
-    for (let failure = 0; failure < 4; failure += 1) {
-      operation.mockRejectedValueOnce(timeout);
-    }
-    const result = withRetry(operation, 5, 100, 250);
-    expect(operation).toHaveBeenCalledTimes(1);
-
-    for (const [index, delay] of [100, 200, 250, 250].entries()) {
-      await jest.advanceTimersByTimeAsync(delay - 1);
-      expect(operation).toHaveBeenCalledTimes(index + 1);
-      await jest.advanceTimersByTimeAsync(1);
-      expect(operation).toHaveBeenCalledTimes(index + 2);
-    }
-    await expect(result).resolves.toBe('recovered');
-  });
-
-  it('passes through the final error at the attempt limit', async () => {
-    const finalError = new NetworkConnectionError('Horizon');
-    const operation = jest.fn().mockRejectedValueOnce(timeout).mockRejectedValueOnce(finalError);
-    const result = expect(withRetry(operation, 2, 10)).rejects.toBe(finalError);
-    await jest.runAllTimersAsync();
-    await result;
-    expect(operation).toHaveBeenCalledTimes(2);
-    expect(jest.getTimerCount()).toBe(0);
-  });
 
   it('skips timers for non-retryable errors and zero delay', async () => {
     const invalid = new ValidationError('amount', 'Expected a positive amount');
@@ -128,17 +285,5 @@ describe('withRetry', () => {
     await expect(withRetry(operation, 2, 50, 0)).resolves.toBe('recovered');
     expect(operation).toHaveBeenCalledTimes(3);
     expect(jest.getTimerCount()).toBe(0);
-  });
-
-  it.each([
-    [0, 50, 100],
-    [1.5, 50, 100],
-    [Infinity, 50, 100],
-    [3, -1, 100],
-    [3, 50, 2_147_483_648],
-  ])('rejects invalid settings %s, %s, %s', async (attempts, base, max) => {
-    const operation = jest.fn();
-    await expect(withRetry(operation, attempts, base, max)).rejects.toThrow(ValidationError);
-    expect(operation).not.toHaveBeenCalled();
   });
 });
