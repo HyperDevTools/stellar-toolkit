@@ -64,24 +64,6 @@ describe('StellarToolkit - Structured Error System & Recovery', () => {
     ).rejects.toThrow(InsufficientBalanceError);
   });
 
-  it('test_network_timeout_error', async () => {
-    let attempts = 0;
-    const result = await withRetry(
-      async () => {
-        attempts += 1;
-        if (attempts < 2) {
-          throw new NetworkTimeoutError('https://horizon-testnet.stellar.org', 5000);
-        }
-        return 'recovered_ok';
-      },
-      3,
-      5,
-    );
-
-    expect(result).toBe('recovered_ok');
-    expect(attempts).toBe(2);
-  });
-
   it('test_error_recovery_suggestions', () => {
     const errors = [
       new AccountNotFoundError('GABC'),
@@ -285,5 +267,23 @@ describe('StellarToolkit - Structured Error System & Recovery', () => {
       await expect(promise).resolves.toBe('bounded');
       expect(recordedDelays).toEqual([MAX_TIMER_DELAY_MS, MAX_TIMER_DELAY_MS]);
     });
+  });
+});
+
+describe('withRetry', () => {
+  const timeout = new NetworkTimeoutError('https://horizon-testnet.stellar.org');
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  it('skips timers for non-retryable errors and zero delay', async () => {
+    const invalid = new ValidationError('amount', 'Expected a positive amount');
+    const operation = jest.fn().mockRejectedValueOnce(invalid);
+    await expect(withRetry(operation)).rejects.toBe(invalid);
+
+    operation.mockRejectedValueOnce(timeout).mockResolvedValueOnce('recovered');
+    await expect(withRetry(operation, 2, 50, 0)).resolves.toBe('recovered');
+    expect(operation).toHaveBeenCalledTimes(3);
+    expect(jest.getTimerCount()).toBe(0);
   });
 });

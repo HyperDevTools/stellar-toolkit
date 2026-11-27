@@ -23,7 +23,7 @@ Use `withRetry` to automatically retry operations that fail with retryable error
 - **Defaults**: `maxAttempts = 3`, `baseDelayMs = 50`, `maxDelayMs = 30_000` (30 seconds).
 - **Validation & overflow safety**:
   - `maxAttempts` must be a safe integer `>= 1` (`ValidationError` otherwise).
-  - `baseDelayMs` and `maxDelayMs` must be finite numbers `>= 0`, with `maxDelayMs >= baseDelayMs` when explicitly supplied (`ValidationError` otherwise).
+  - `baseDelayMs` and `maxDelayMs` must be finite numbers `>= 0`, with `maxDelayMs >= baseDelayMs` when explicitly supplied except that zero disables the delay (`ValidationError` otherwise).
   - Delays exceeding `MAX_TIMER_DELAY_MS` (`2_147_483_647` ms, Node.js `setTimeout` signed 32-bit ceiling) or large exponents are safely clamped so timers never overflow to `1ms` or `Infinity`.
 
 ```typescript

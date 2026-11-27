@@ -30,14 +30,23 @@ Stellar Toolkit provides high-level abstractions over the Stellar SDK, making it
 - **Well Tested**: Comprehensive test suite with example tests
 - **CI/CD**: Automated testing and linting on every commit
 
-## 📦 Installation
+## Installation
+
+Build the library from this repository and pack the compiled JavaScript and TypeScript declarations.
 
 ```bash
-npm install @hyperdevtools/stellar-toolkit
-# or
-yarn add @hyperdevtools/stellar-toolkit
-# or
-pnpm add @hyperdevtools/stellar-toolkit
+git clone https://github.com/HyperDevTools/stellar-toolkit.git
+cd stellar-toolkit
+npm ci
+npm pack
+```
+
+From your application directory, run `npm install /path/to/hyperdevtools-stellar-toolkit-0.1.0.tgz`. The package exports `StellarToolkit` under `@hyperdevtools/stellar-toolkit`.
+
+To check the build without making a network request, run this from the Toolkit checkout after packing.
+
+```bash
+node -e 'const { StellarToolkit } = require("./dist"); console.log(new StellarToolkit({ network: "testnet" }).generateKeypair().publicKey)'
 ```
 
 ## 🔧 Quick Start

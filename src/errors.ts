@@ -196,7 +196,7 @@ export async function withRetry<T>(
     ) {
       throw new ValidationError('maxDelayMs', 'maxDelayMs must be a finite non-negative number');
     }
-    if (explicitMaxDelayMs < baseDelayMs) {
+    if (explicitMaxDelayMs > 0 && explicitMaxDelayMs < baseDelayMs) {
       throw new ValidationError(
         'maxDelayMs',
         `maxDelayMs (${explicitMaxDelayMs}) must be greater than or equal to baseDelayMs (${baseDelayMs})`,
@@ -218,7 +218,9 @@ export async function withRetry<T>(
         throw error;
       }
       const delayMs = calculateRetryDelayMs(attempt, baseDelayMs, resolvedMaxDelayMs);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
     }
   }
 }

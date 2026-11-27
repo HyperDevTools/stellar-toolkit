@@ -111,7 +111,7 @@ async accountExists(publicKey: string): Promise<boolean>
 **Parameters:**
 - `publicKey` (string): The public key to check
 
-**Returns:** `true` if account exists, `false` otherwise
+**Returns:** `true` for a successful lookup and `false` for a confirmed Horizon 404. Timeouts and other lookup failures reject with a typed network error.
 
 **Example:**
 ```typescript
@@ -163,7 +163,7 @@ async fundTestnetAccount(publicKey: string): Promise<void>
 **Throws:**
 - `Error` if the request fails (network down, invalid key, etc.)
 
-**Note:** Only works on testnet. Will fail on mainnet.
+A mainnet client or an invalid account public key fails validation before an HTTP request is sent. Never pass a secret key to Friendbot.
 
 **Example:**
 ```typescript

@@ -1,6 +1,9 @@
 import {
   Keypair,
   Horizon,
+  Networks,
+  NotFoundError,
+  StrKey,
   TransactionBuilder,
   Operation,
   BASE_FEE,
@@ -27,7 +30,7 @@ export const MAX_SIGNER_WEIGHT = 255;
 export class AccountManager {
   constructor(
     private server: Server,
-    private networkPassphrase = 'Test SDF Network ; September 2015',
+    private networkPassphrase: string = Networks.TESTNET,
   ) {}
 
   private mapAccountLookupError(publicKey: string, error: unknown): Error {
@@ -58,16 +61,10 @@ export class AccountManager {
           ? errObj.message
           : String(error);
 
-    const isDnsNotFound =
-      code === 'ENOTFOUND' ||
-      /enotfound|(?:host|server|domain|address|dns)\s+not\s+found/i.test(rawMessage);
-
     if (
       status === 404 ||
-      name === 'NotFoundError' ||
-      (!isDnsNotFound &&
-        typeof status !== 'number' &&
-        (/\b404\b/.test(rawMessage) || /\bnot found\b/i.test(rawMessage)))
+      error instanceof NotFoundError ||
+      (status === undefined && /^404 Not Found$/i.test(rawMessage))
     ) {
       return new AccountNotFoundError(publicKey);
     }
@@ -95,29 +92,11 @@ export class AccountManager {
       return new NetworkTimeoutError(serverUrl);
     }
 
-    if (
-      isDnsNotFound ||
-      (typeof status === 'number' && status >= 500) ||
-      [
-        'ECONNREFUSED',
-        'ENOTFOUND',
-        'ECONNRESET',
-        'EAI_AGAIN',
-        'ENETUNREACH',
-        'EHOSTUNREACH',
-      ].includes(code) ||
-      /econnrefused|enotfound|econnreset|network|connection|unreachable|\b5\d\d\b|internal server error|bad gateway|service unavailable/i.test(
-        rawMessage,
-      )
-    ) {
-      const detail =
-        typeof status === 'number'
-          ? `HTTP ${status}${rawMessage ? `: ${rawMessage}` : ''}`
-          : rawMessage;
-      return new NetworkConnectionError(serverUrl, detail);
+    const detail = status === undefined ? rawMessage : `HTTP ${status}: ${rawMessage}`;
+    if (status !== undefined && status >= 400 && status < 500) {
+      return new Error(`Failed to load account ${publicKey}: ${detail}`);
     }
-
-    return new Error(`Failed to load account ${publicKey}: ${rawMessage}`);
+    return new NetworkConnectionError(serverUrl, detail);
   }
 
   /**
@@ -151,7 +130,8 @@ export class AccountManager {
   }
 
   /**
-   * Check if account exists on the network
+   * Return false only when Horizon confirms the account is missing.
+   * Timeouts and other lookup errors are propagated to callers.
    */
   async accountExists(publicKey: string): Promise<boolean> {
     try {
@@ -178,15 +158,21 @@ export class AccountManager {
    * Fund account on testnet using Friendbot
    */
   async fundTestnetAccount(publicKey: string): Promise<void> {
+    if (this.networkPassphrase !== Networks.TESTNET) {
+      throw new ValidationError('network', 'Friendbot funding requires a testnet client');
+    }
+    if (!StrKey.isValidEd25519PublicKey(publicKey)) {
+      throw new ValidationError('publicKey', 'Friendbot requires a Stellar account public key');
+    }
+
+    let response: Response;
     try {
-      const response = await fetch(
-        `https://friendbot.stellar.org?addr=${encodeURIComponent(publicKey)}`,
-      );
-      if (!response.ok) {
-        throw new Error(`Friendbot request failed: ${response.statusText}`);
-      }
-    } catch (error) {
-      throw new Error(`Failed to fund testnet account: ${error}`);
+      response = await fetch(`https://friendbot.stellar.org?addr=${encodeURIComponent(publicKey)}`);
+    } catch {
+      throw new NetworkConnectionError('Friendbot');
+    }
+    if (!response.ok) {
+      throw new NetworkConnectionError('Friendbot', `HTTP ${response.status}`);
     }
   }
 

@@ -4,6 +4,7 @@ import {
   BASE_FEE,
   Keypair,
   Networks,
+  NotFoundError,
   Operation,
   TransactionBuilder,
 } from 'stellar-sdk';
@@ -43,98 +44,68 @@ describe('StellarToolkit - Account & Multi-Sig Operations', () => {
   });
 
   describe('accountExists', () => {
-    it('should return true for an existing account', async () => {
-      const keypair = toolkit.generateKeypair();
-      const server = (toolkit as unknown as { server: { loadAccount: jest.Mock } }).server;
-      jest
-        .spyOn(server, 'loadAccount')
-        .mockResolvedValueOnce(new Account(keypair.publicKey, '100') as unknown as never);
+    const loadAccount = (tk: StellarToolkit) => {
+      const server = (tk as unknown as { server: { loadAccount: jest.Mock } }).server;
+      return jest.spyOn(server, 'loadAccount');
+    };
 
-      const exists = await toolkit.accountExists(keypair.publicKey);
-      expect(exists).toBe(true);
+    it('returns true when Horizon returns the account', async () => {
+      const { publicKey } = toolkit.generateKeypair();
+      loadAccount(toolkit).mockResolvedValueOnce(new Account(publicKey, '1'));
+      await expect(toolkit.accountExists(publicKey)).resolves.toBe(true);
     });
 
-    it('should return false for a confirmed 404 Not Found response', async () => {
-      const keypair = toolkit.generateKeypair();
-      const server = (toolkit as unknown as { server: { loadAccount: jest.Mock } }).server;
-      jest.spyOn(server, 'loadAccount').mockRejectedValueOnce({
-        response: { status: 404 },
-        message: 'Resource Missing',
-      });
-
-      const exists = await toolkit.accountExists(keypair.publicKey);
-      expect(exists).toBe(false);
+    it('returns false for the SDK not-found error or a confirmed HTTP 404', async () => {
+      const { publicKey } = toolkit.generateKeypair();
+      loadAccount(toolkit)
+        .mockRejectedValueOnce(new NotFoundError('Not Found', {}))
+        .mockRejectedValueOnce({ response: { status: 404 } });
+      await expect(toolkit.accountExists(publicKey)).resolves.toBe(false);
+      await expect(toolkit.accountExists(publicKey)).resolves.toBe(false);
     });
 
-    it('should return false for a 404 Not Found error message', async () => {
-      const keypair = toolkit.generateKeypair();
-      const server = (toolkit as unknown as { server: { loadAccount: jest.Mock } }).server;
-      jest.spyOn(server, 'loadAccount').mockRejectedValueOnce(new Error('404 Not Found'));
+    it.each([
+      { failure: new Error('timeout of 5000ms exceeded'), expected: NetworkTimeoutError },
+      { failure: new Error('Connection failed'), expected: NetworkConnectionError },
+      { failure: { response: { status: 503 } }, expected: NetworkConnectionError },
+      { failure: { response: { status: 504 } }, expected: NetworkTimeoutError },
+      { failure: new Error('DNS host not found'), expected: NetworkConnectionError },
+      {
+        failure: new Error('Proxy mentioned 404 while unavailable'),
+        expected: NetworkConnectionError,
+      },
+    ])('propagates lookup failures as typed errors', async ({ failure, expected }) => {
+      const { publicKey } = toolkit.generateKeypair();
+      loadAccount(toolkit).mockRejectedValueOnce(failure);
+      await expect(toolkit.accountExists(publicKey)).rejects.toBeInstanceOf(expected);
+    });
+  });
 
-      const exists = await toolkit.accountExists(keypair.publicKey);
-      expect(exists).toBe(false);
+  describe('fundTestnetAccount', () => {
+    afterEach(() => jest.restoreAllMocks());
+
+    it('requests funding for a public key on testnet', async () => {
+      const { publicKey } = toolkit.generateKeypair();
+      const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response());
+      await expect(toolkit.fundTestnetAccount(publicKey)).resolves.toBeUndefined();
+      expect(fetchSpy).toHaveBeenCalledWith(`https://friendbot.stellar.org?addr=${publicKey}`);
     });
 
-    it('should reject with NetworkTimeoutError on Horizon timeout', async () => {
-      const keypair = toolkit.generateKeypair();
-      const server = (toolkit as unknown as { server: { loadAccount: jest.Mock } }).server;
-      jest.spyOn(server, 'loadAccount').mockRejectedValueOnce(
-        Object.assign(new Error('Request timed out after 5000ms'), {
-          code: 'ETIMEDOUT',
-        }),
-      );
-
-      await expect(toolkit.accountExists(keypair.publicKey)).rejects.toThrow(NetworkTimeoutError);
+    it('rejects mainnet before calling Friendbot', async () => {
+      const { publicKey } = toolkit.generateKeypair();
+      const fetchSpy = jest.spyOn(globalThis, 'fetch');
+      const mainnet = new StellarToolkit({ network: 'mainnet' });
+      await expect(mainnet.fundTestnetAccount(publicKey)).rejects.toBeInstanceOf(ValidationError);
+      expect(fetchSpy).not.toHaveBeenCalled();
     });
 
-    it('should reject with NetworkConnectionError on connection failure (ECONNREFUSED / ENOTFOUND)', async () => {
-      const keypair = toolkit.generateKeypair();
-      const server = (toolkit as unknown as { server: { loadAccount: jest.Mock } }).server;
-      jest.spyOn(server, 'loadAccount').mockRejectedValueOnce(
-        Object.assign(new Error('getaddrinfo ENOTFOUND horizon-testnet.stellar.org'), {
-          code: 'ENOTFOUND',
-        }),
-      );
-
-      await expect(toolkit.accountExists(keypair.publicKey)).rejects.toThrow(
-        NetworkConnectionError,
-      );
-    });
-
-    it('should reject with NetworkConnectionError on Horizon 5xx server error', async () => {
-      const keypair = toolkit.generateKeypair();
-      const server = (toolkit as unknown as { server: { loadAccount: jest.Mock } }).server;
-      jest.spyOn(server, 'loadAccount').mockRejectedValueOnce({
-        response: { status: 503 },
-        message: 'Service Unavailable',
-      });
-
-      await expect(toolkit.accountExists(keypair.publicKey)).rejects.toThrow(
-        NetworkConnectionError,
-      );
-    });
-
-    it('should not misclassify DNS host-not-found messages as AccountNotFoundError', async () => {
-      const keypair = toolkit.generateKeypair();
-      const server = (toolkit as unknown as { server: { loadAccount: jest.Mock } }).server;
-      jest
-        .spyOn(server, 'loadAccount')
-        .mockRejectedValueOnce(new Error('DNS host not found: horizon-testnet.stellar.org'));
-
-      await expect(toolkit.accountExists(keypair.publicKey)).rejects.toThrow(
-        NetworkConnectionError,
-      );
-    });
-
-    it('should reject with NetworkTimeoutError on Horizon 504 Gateway Timeout', async () => {
-      const keypair = toolkit.generateKeypair();
-      const server = (toolkit as unknown as { server: { loadAccount: jest.Mock } }).server;
-      jest.spyOn(server, 'loadAccount').mockRejectedValueOnce({
-        response: { status: 504 },
-        message: 'Gateway Timeout',
-      });
-
-      await expect(toolkit.accountExists(keypair.publicKey)).rejects.toThrow(NetworkTimeoutError);
+    it('rejects non-public keys without sending or echoing them', async () => {
+      const secret = Keypair.random().secret();
+      const fetchSpy = jest.spyOn(globalThis, 'fetch');
+      const result = toolkit.fundTestnetAccount(secret);
+      await expect(result).rejects.toBeInstanceOf(ValidationError);
+      await expect(result).rejects.not.toThrow(secret);
+      expect(fetchSpy).not.toHaveBeenCalled();
     });
   });
 
