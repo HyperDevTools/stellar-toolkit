@@ -167,9 +167,7 @@ export class AccountManager {
 
     let response: Response;
     try {
-      response = await fetch(
-        `https://friendbot.stellar.org?addr=${encodeURIComponent(publicKey)}`,
-      );
+      response = await fetch(`https://friendbot.stellar.org?addr=${encodeURIComponent(publicKey)}`);
     } catch {
       throw new NetworkConnectionError('Friendbot');
     }
